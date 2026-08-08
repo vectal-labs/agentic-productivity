@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+PRODUCTIVITY_BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PRODUCTIVITY_ROOT=$(CDPATH= cd -- "$PRODUCTIVITY_BIN_DIR/.." && pwd)
+export PYTHONPATH="$PRODUCTIVITY_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+for PRODUCTIVITY_PYTHON in "${CORRAL_PYTHON:-}" /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+  [ -n "$PRODUCTIVITY_PYTHON" ] || continue
+  if "$PRODUCTIVITY_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+    exec "$PRODUCTIVITY_PYTHON" -m agentic_productivity.cli "$@"
+  fi
+done
+
+printf '%s\n' 'agentic-productivity requires Python 3.11 or newer' >&2
+exit 1
