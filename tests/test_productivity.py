@@ -46,10 +46,15 @@ from agentic_productivity.model import (  # noqa: E402
     HarnessResult,
 )
 from agentic_productivity.reporting import (  # noqa: E402
+    CHART_HEIGHT,
+    CHART_WIDTH,
+    DEFAULT_REPORT_DAYS,
+    MOCK_PNG,
     TREND_COLOR,
     _linear_trend,
     build_report,
     mock_delivery,
+    render_chart,
 )
 
 
@@ -663,7 +668,11 @@ esac
         self.assertNotIn(sensitive, serialized)
         self.assertNotIn("private-session-id", serialized)
         self.assertEqual(len(report.charts), 3)
+        self.assertEqual(len(report.charts[0].config["data"]["labels"]), DEFAULT_REPORT_DAYS)
         for chart in report.charts:
+            self.assertIn("last 90 days", chart.config["options"]["plugins"]["title"]["text"])
+            self.assertTrue(chart.config["options"]["plugins"]["legend"]["display"])
+            self.assertEqual(chart.config["options"]["plugins"]["legend"]["position"], "top")
             trend = chart.config["data"]["datasets"][-1]
             self.assertEqual(trend["label"], "Long-term trend")
             self.assertEqual(trend["type"], "line")
@@ -672,12 +681,47 @@ esac
             self.assertEqual(trend["pointRadius"], 0)
             self.assertEqual(trend["tension"], 0)
             self.assertEqual(trend["lineTension"], 0)
-            self.assertEqual(len(trend["data"]), 30)
+            self.assertNotIn("order", trend)
+            self.assertEqual(len(trend["data"]), DEFAULT_REPORT_DAYS)
+        for chart in report.charts[1:]:
+            self.assertEqual(chart.config["type"], "bar")
+            self.assertTrue(chart.config["options"]["scales"]["x"]["stacked"])
+            self.assertTrue(chart.config["options"]["scales"]["y"]["stacked"])
         self.assertEqual(delivered["attachments"], [
             "1-commits.png",
             "2-sessions.png",
             "3-prompts.png",
         ])
+
+    def test_renderer_requests_the_90_day_full_hd_style(self) -> None:
+        report = build_report(self.database, DAY)
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return MOCK_PNG
+
+        with mock.patch(
+            "agentic_productivity.reporting.urllib.request.urlopen",
+            return_value=Response(),
+        ) as urlopen:
+            image = render_chart(report.charts[0])
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(image, MOCK_PNG)
+        self.assertEqual(payload["version"], "4")
+        self.assertEqual(payload["width"], CHART_WIDTH)
+        self.assertEqual(payload["height"], CHART_HEIGHT)
+        self.assertEqual(payload["devicePixelRatio"], 1)
+        self.assertEqual(payload["backgroundColor"], "#0F172A")
 
     def test_installer_dry_run_and_mock_cli_need_no_secret_or_network(self) -> None:
         environment = os.environ.copy()
@@ -752,6 +796,9 @@ esac
         self.assertEqual(plist["StartInterval"], 300)
         self.assertTrue(plist["RunAtLoad"])
         self.assertEqual(plist["Umask"], 63)
+        self.assertIn("--days", plist["ProgramArguments"])
+        days_index = plist["ProgramArguments"].index("--days")
+        self.assertEqual(plist["ProgramArguments"][days_index + 1], "90")
         self.assertNotIn("webhook", plist_path.read_text(encoding="utf-8").lower())
         self.assertTrue((app / "agentic_productivity/cli.py").is_file())
         self.assertEqual(plist_path.stat().st_mode & 0o777, 0o600)

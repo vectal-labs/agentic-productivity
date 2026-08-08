@@ -10,6 +10,8 @@
     <string>-m</string>
     <string>agentic_productivity.cli</string>
     <string>run</string>
+    <string>--days</string>
+    <string>90</string>
     <string>--json</string>
     <string>--quiet</string>
   </array>

@@ -37,7 +37,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf 'Would install app: %s\n' "$APP_ROOT"
   printf 'Would preserve state: %s\n' "$STATE_ROOT/metrics.sqlite3"
   printf 'Would install LaunchAgent: %s\n' "$PLIST"
-  printf '%s\n' 'Would observe Cursor every 5 minutes and report at 08:00 with wake catch-up'
+  printf '%s\n' 'Would observe Cursor every 5 minutes and send a 90-day report at 08:00 with wake catch-up'
   exit 0
 fi
 
@@ -77,4 +77,4 @@ fi
 printf 'Installed: %s\n' "$APP_ROOT"
 printf 'LaunchAgent: %s\n' "$PLIST"
 printf 'State: %s\n' "$STATE_ROOT/metrics.sqlite3"
-printf '%s\n' 'Schedule: Cursor observation every 5 minutes; report at 08:00 with wake catch-up'
+printf '%s\n' 'Schedule: Cursor observation every 5 minutes; 90-day report at 08:00 with wake catch-up'

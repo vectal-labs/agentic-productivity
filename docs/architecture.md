@@ -5,7 +5,7 @@
 1. Native collectors read local agent registries and Git reflogs.
 2. The collector converts events into daily aggregate counts in Europe/Warsaw time.
 3. SQLite stores only daily counts, collector health, hashed Cursor source keys, baselines, and delivery state.
-4. The reporter builds three 30-day Chart.js configurations.
+4. The reporter builds three 90-day Chart.js configurations.
 5. QuickChart renders the aggregate configurations into PNG files.
 6. Discord receives the daily totals and three PNG attachments.
 

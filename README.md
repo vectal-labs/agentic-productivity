@@ -2,7 +2,7 @@
 
 Agentic Productivity measures whether AI agents are making David more productive over time.
 
-Every morning it sends three 30-day charts to a private Discord channel:
+Every morning it sends three 90-day charts to a private Discord channel:
 
 - unique local Git commits
 - active agent sessions, split by harness
@@ -72,7 +72,7 @@ The installed LaunchAgent observes Cursor CLI every five minutes and sends yeste
 ./scripts/uninstall.sh
 ```
 
-Use `collect --days 60` to backfill a longer local window. The scheduled Discord report remains 30 days.
+Use `collect --days N` to backfill any local window from 1 to 366 days. The scheduled Discord report uses 90 days.
 
 ## Documentation
 

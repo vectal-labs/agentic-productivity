@@ -4,7 +4,7 @@
 
 - Measure whether agentic work increases David's output over long time horizons.
 - Keep the system local, simple, auditable, and independent from any agent runtime.
-- Send one private Discord report each morning with exactly three 30-day charts.
+- Send one private Discord report each morning with exactly three 90-day charts.
 
 ## Source of truth
 
@@ -36,6 +36,7 @@
 - Add a behavior-focused test for every collector or metric change.
 - Preserve the existing aggregate database during installs and uninstalls.
 - Keep the LaunchAgent template free of secrets.
+- If GitHub auth fails inside a restricted agent shell, verify it through the normal Keychain-backed environment before declaring authentication blocked.
 
 ## Verification
 

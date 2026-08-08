@@ -13,6 +13,7 @@ from . import __version__
 from .collectors import CollectorContext, WARSAW, collect_all, collect_cursor_cli
 from .database import Database
 from .reporting import (
+    DEFAULT_REPORT_DAYS,
     build_report,
     load_webhook,
     mock_delivery,
@@ -188,7 +189,7 @@ def parser() -> argparse.ArgumentParser:
 
     collect = sub.add_parser("collect", help="collect and store aggregate metrics")
     collect.add_argument("--end", type=_parse_day)
-    collect.add_argument("--days", type=int, default=30)
+    collect.add_argument("--days", type=int, default=DEFAULT_REPORT_DAYS)
     collect.add_argument("--json", action="store_true")
 
     for name, help_text in (
@@ -197,7 +198,7 @@ def parser() -> argparse.ArgumentParser:
     ):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--date", type=_parse_day)
-        command.add_argument("--days", type=int, default=30)
+        command.add_argument("--days", type=int, default=DEFAULT_REPORT_DAYS)
         command.add_argument("--force", action="store_true")
         command.add_argument("--dry-run", action="store_true")
         command.add_argument("--json", action="store_true")

@@ -26,7 +26,7 @@
 ## Time window
 
 - Daily boundaries use `Europe/Warsaw`.
-- The scheduled report covers the 30 days ending yesterday.
+- The scheduled report covers the 90 days ending yesterday.
 - Manual collection supports 1 to 366 days.
 
 ## Charts
@@ -35,3 +35,4 @@
 - Sessions and prompts use stacked daily bars. Bar height is the total; colored segments are harness contributions.
 - The gray dashed line is an ordinary least-squares straight trend across the full displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
+- Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels.

@@ -17,6 +17,9 @@ from .database import Database
 
 QUICKCHART_URL = "https://quickchart.io/chart"
 KEYCHAIN_SERVICE = "com.corral.agentic-productivity.discord-webhook"
+DEFAULT_REPORT_DAYS = 90
+CHART_WIDTH = 2048
+CHART_HEIGHT = 1080
 MOCK_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -57,34 +60,66 @@ def _date_spine(start: date, end: date) -> list[date]:
 def _base_options(title: str, *, stacked: bool = False) -> dict[str, Any]:
     return {
         "responsive": True,
+        "maintainAspectRatio": False,
+        "animation": False,
+        "interaction": {"mode": "index", "intersect": False},
         "plugins": {
             "title": {
                 "display": True,
                 "text": title,
-                "color": "#F8FAFC",
-                "font": {"size": 24, "weight": "bold"},
-                "padding": 20,
+                "color": "#E2E8F0",
+                "font": {"size": 38, "weight": "normal"},
+                "padding": {"top": 18, "bottom": 8},
             },
             "legend": {
-                "display": stacked,
-                "position": "bottom",
-                "labels": {"color": "#CBD5E1", "boxWidth": 14},
+                "display": True,
+                "position": "top",
+                "align": "center",
+                "labels": {
+                    "color": "#A3B1C6",
+                    "boxWidth": 27,
+                    "boxHeight": 20,
+                    "padding": 24,
+                    "font": {"size": 21},
+                },
             },
         },
         "scales": {
             "x": {
                 "stacked": stacked,
-                "ticks": {"color": "#94A3B8", "maxRotation": 0, "autoSkip": True},
-                "grid": {"display": False},
+                "ticks": {
+                    "color": "#94A3B8",
+                    "font": {"size": 19},
+                    "maxRotation": 0,
+                    "autoSkip": True,
+                    "maxTicksLimit": 16,
+                    "padding": 8,
+                },
+                "grid": {"display": False, "drawBorder": False},
+                "border": {"display": False},
             },
             "y": {
                 "stacked": stacked,
                 "beginAtZero": True,
-                "ticks": {"color": "#94A3B8", "precision": 0},
-                "grid": {"color": "rgba(148,163,184,0.15)"},
+                "ticks": {
+                    "color": "#94A3B8",
+                    "font": {"size": 19},
+                    "precision": 0,
+                    "maxTicksLimit": 9,
+                    "padding": 12,
+                },
+                "grid": {"color": "#1E293B", "lineWidth": 1, "drawBorder": False},
+                "border": {"display": False},
             },
         },
-        "layout": {"padding": 16},
+        "layout": {
+            "padding": {
+                "left": 28,
+                "right": 28,
+                "top": 10 if stacked else 36,
+                "bottom": 12,
+            }
+        },
     }
 
 
@@ -118,7 +153,6 @@ def _trend_dataset(values: list[int]) -> dict[str, Any]:
         "tension": 0,
         "lineTension": 0,
         "stack": "trend",
-        "order": -10,
     }
 
 
@@ -134,11 +168,14 @@ def _chart_config(
                 "data": values,
                 "borderColor": color,
                 "backgroundColor": color if not single else "rgba(124,58,237,0.18)",
-                "borderWidth": 3 if single else 0,
+                "borderWidth": 4 if single else 0,
                 "fill": single,
-                "tension": 0.25,
-                "pointRadius": 2 if single else 0,
+                "tension": 0 if single else 0,
+                "pointRadius": 4 if single else 0,
+                "pointHoverRadius": 5 if single else 0,
                 "stack": "metrics",
+                "barPercentage": 0.86,
+                "categoryPercentage": 0.9,
             }
         )
     daily_totals = [
@@ -152,7 +189,9 @@ def _chart_config(
     }
 
 
-def build_report(database: Database, report_day: date, days: int = 30) -> Report:
+def build_report(
+    database: Database, report_day: date, days: int = DEFAULT_REPORT_DAYS
+) -> Report:
     start = report_day - timedelta(days=days - 1)
     spine = _date_spine(start, report_day)
     labels = [day.strftime("%b %-d") for day in spine]
@@ -202,7 +241,7 @@ def build_report(database: Database, report_day: date, days: int = 30) -> Report
         Chart(
             "1-commits.png",
             _chart_config(
-                title="Unique local commits — last 30 days",
+                title=f"Unique local commits — last {days} days",
                 labels=labels,
                 series={"Commits": commits},
                 single=True,
@@ -211,7 +250,7 @@ def build_report(database: Database, report_day: date, days: int = 30) -> Report
         Chart(
             "2-sessions.png",
             _chart_config(
-                title="Active agent sessions — last 30 days",
+                title=f"Active agent sessions — last {days} days",
                 labels=labels,
                 series=sessions or {"No measured sessions": [0] * len(spine)},
                 single=False,
@@ -220,7 +259,7 @@ def build_report(database: Database, report_day: date, days: int = 30) -> Report
         Chart(
             "3-prompts.png",
             _chart_config(
-                title="Instruction-bearing prompts — last 30 days",
+                title=f"Instruction-bearing prompts — last {days} days",
                 labels=labels,
                 series=prompts or {"No measured prompts": [0] * len(spine)},
                 single=False,
@@ -233,8 +272,10 @@ def build_report(database: Database, report_day: date, days: int = 30) -> Report
 def render_chart(chart: Chart, *, timeout: int = 20) -> bytes:
     body = json.dumps(
         {
-            "width": 1200,
-            "height": 650,
+            "version": "4",
+            "width": CHART_WIDTH,
+            "height": CHART_HEIGHT,
+            "devicePixelRatio": 1,
             "backgroundColor": "#0F172A",
             "format": "png",
             "chart": chart.config,
