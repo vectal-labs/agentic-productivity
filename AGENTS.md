@@ -37,6 +37,7 @@
 - Preserve the existing aggregate database during installs and uninstalls.
 - Keep the LaunchAgent template free of secrets.
 - If GitHub auth fails inside a restricted agent shell, verify it through the normal Keychain-backed environment before declaring authentication blocked.
+- Never run Amp or other login-gated CLIs with a fake `HOME`. That can open a browser sign-in page. Do not trigger their auth flows.
 
 ## Verification
 

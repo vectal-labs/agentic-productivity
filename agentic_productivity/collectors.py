@@ -330,14 +330,13 @@ def collect_qwen(context: CollectorContext) -> HarnessResult:
     )
 
 
-def collect_opencode(context: CollectorContext) -> HarnessResult:
-    harness = "OpenCode"
-    root = context.home / ".local/share/opencode/storage/message"
-    installed = _command_installed("opencode") or root.exists()
-    result = HarnessResult(harness)
-    if not installed:
-        result.coverage = Coverage(harness, False, "absent")
-        return result
+def _sqlite_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def _collect_opencode_legacy_json(
+    context: CollectorContext, result: HarnessResult, root: Path
+) -> HarnessResult:
     files = _recent_files([root], "*.json", context.start_timestamp)
     for path in files:
         try:
@@ -354,8 +353,71 @@ def collect_opencode(context: CollectorContext) -> HarnessResult:
         result.add_session(day, session_id)
         if message.get("role") in INSTRUCTION_ROLES:
             result.add_prompt(day)
-    result.coverage = Coverage(harness, True, "full", f"{len(files)} recent message records")
+    result.coverage = Coverage(result.harness, True, "full", f"{len(files)} recent message records")
     return result
+
+
+def _collect_opencode_sqlite(
+    context: CollectorContext, result: HarnessResult, path: Path
+) -> HarnessResult:
+    try:
+        with _readonly_sqlite(path) as connection:
+            session_cols = _sqlite_columns(connection, "session")
+            message_cols = _sqlite_columns(connection, "message")
+            if not {"id", "time_created", "time_updated"} <= session_cols:
+                result.coverage = Coverage(
+                    result.harness, True, "error", "native session schema is unsupported"
+                )
+                return result
+            if not {"session_id", "time_created", "data"} <= message_cols:
+                result.coverage = Coverage(
+                    result.harness, True, "error", "native message schema is unsupported"
+                )
+                return result
+            for session_id, created_at, updated_at in connection.execute(
+                "SELECT id, time_created, time_updated FROM session"
+            ):
+                for value in (created_at, updated_at):
+                    day = _day(value)
+                    if context.includes(day):
+                        result.add_session(day, str(session_id))
+            count = 0
+            for session_id, created_at, role in connection.execute(
+                "SELECT session_id, time_created, json_extract(data, '$.role') FROM message"
+            ):
+                day = _day(created_at)
+                if not context.includes(day):
+                    continue
+                count += 1
+                result.add_session(day, str(session_id))
+                if role in INSTRUCTION_ROLES:
+                    result.add_prompt(day)
+    except sqlite3.Error:
+        result.coverage = Coverage(
+            result.harness, True, "error", "native session database is unreadable"
+        )
+        return result
+    result.coverage = Coverage(
+        result.harness, True, "full", f"{count} recent message records"
+    )
+    return result
+
+
+def collect_opencode(context: CollectorContext) -> HarnessResult:
+    harness = "OpenCode"
+    data_root = context.home / ".local/share/opencode"
+    database = data_root / "opencode.db"
+    legacy_root = data_root / "storage/message"
+    installed = (
+        _command_installed("opencode") or database.exists() or legacy_root.exists()
+    )
+    result = HarnessResult(harness)
+    if not installed:
+        result.coverage = Coverage(harness, False, "absent")
+        return result
+    if database.exists():
+        return _collect_opencode_sqlite(context, result, database)
+    return _collect_opencode_legacy_json(context, result, legacy_root)
 
 
 def _readonly_sqlite(path: Path) -> sqlite3.Connection:
@@ -918,16 +980,20 @@ def _cursor_cli_prompt_total(path: Path) -> int:
 
 def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
     harness = "Cursor CLI"
-    root = context.home / ".cursor/chats"
-    installed = _command_installed("cursor-agent") or root.exists()
+    roots = [
+        context.home / ".cursor/chats",
+        context.home / ".cursor/acp-sessions",
+    ]
+    installed = _command_installed("cursor-agent") or any(root.exists() for root in roots)
     result = HarnessResult(harness)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
     baseline = context.database.ensure_collector_baseline(harness, context.now)
-    stores = _recent_files([root], "store.db", context.start_timestamp)
+    stores = _recent_files(roots, "store.db", context.start_timestamp)
     historical_gaps = 0
     unreadable = 0
+    acp_sessions = 0
     for store in stores:
         meta_path = store.parent / "meta.json"
         try:
@@ -935,6 +1001,9 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         except (OSError, json.JSONDecodeError):
             meta = {}
         session_id = store.parent.name
+        is_acp = store.parent.parent.name == "acp-sessions"
+        if is_acp:
+            acp_sessions += 1
         try:
             fallback = store.stat().st_mtime
         except OSError:
@@ -944,6 +1013,8 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         updated_at = _instant(meta.get("updatedAtMs") or fallback)
         created = created_at.date() if created_at is not None else None
         updated = updated_at.date() if updated_at is not None else None
+        if created is None:
+            created = updated
         for day in {created, updated}:
             if context.includes(day):
                 result.add_session(day, session_id)
@@ -958,9 +1029,10 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
             and created == updated
             and context.includes(updated)
         )
+        source_prefix = "native-v2:acp" if is_acp else "native-v2"
         _, first = context.database.observe_source_total(
             harness,
-            f"native-v2:{session_id}",
+            f"{source_prefix}:{session_id}",
             total,
             observed,
             attribute_first=attribute_first,
@@ -971,7 +1043,10 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         harness, context.start, context.end
     ).items():
         result.add_prompt(day, count)
-    detail = f"{len(stores) - unreadable} recent sessions; exact daily counts after local baseline"
+    readable = len(stores) - unreadable
+    detail = f"{readable} recent sessions; exact daily counts after local baseline"
+    if acp_sessions:
+        detail += f"; {acp_sessions} ACP sessions"
     baseline_day = baseline.astimezone(WARSAW).date()
     range_predates_baseline = context.start <= baseline_day
     if range_predates_baseline:
@@ -990,6 +1065,17 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
     return result
 
 
+def _amp_is_logged_in(home: Path) -> bool:
+    root = home / ".local/share/amp"
+    return (root / "session.json").is_file() or (root / "secrets.json").is_file()
+
+
+def _amp_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["BROWSER"] = "/usr/bin/true"
+    return env
+
+
 def collect_amp(context: CollectorContext) -> HarnessResult:
     harness = "Amp"
     candidates = [context.home / ".amp/bin/amp"]
@@ -1006,10 +1092,16 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
     if binary is None:
         result.coverage = Coverage(harness, True, "unavailable", "Amp CLI is unavailable")
         return result
+    if not _amp_is_logged_in(context.home):
+        result.coverage = Coverage(
+            harness, True, "unavailable", "Amp login is missing; CLI was not started"
+        )
+        return result
 
     thread_ids: list[str] = []
     page_size = 100
     capped = False
+    amp_env = _amp_env()
     for offset in range(0, 5000, page_size):
         try:
             completed = subprocess.run(
@@ -1029,6 +1121,7 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
                 stderr=subprocess.DEVNULL,
                 check=False,
                 timeout=30,
+                env=amp_env,
             )
         except (OSError, subprocess.TimeoutExpired):
             result.coverage = Coverage(harness, True, "error", "thread listing failed")
@@ -1057,6 +1150,7 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
                 stderr=subprocess.DEVNULL,
                 check=False,
                 timeout=60,
+                env=amp_env,
             )
         except (OSError, subprocess.TimeoutExpired):
             failed += 1

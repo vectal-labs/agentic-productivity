@@ -494,6 +494,113 @@ class ProductivityTests(unittest.TestCase):
         self.assertEqual(second.prompts[DAY], 1)
         self.assertEqual(third.prompts[DAY], 2)
 
+    def test_cursor_cli_counts_acp_sessions_from_separate_store(self) -> None:
+        directory = self.home / ".cursor/acp-sessions/acp-session-1"
+        directory.mkdir(parents=True)
+        store = directory / "store.db"
+        user_id = bytes.fromhex("aa" * 32)
+        turn_id = bytes.fromhex("bb" * 32)
+        root_id = "cc" * 32
+        with sqlite3.connect(store) as connection:
+            connection.execute("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)")
+            connection.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            connection.executemany(
+                "INSERT INTO blobs VALUES(?, ?)",
+                [
+                    (user_id.hex(), protobuf_bytes(1, b"private acp instruction")),
+                    (turn_id.hex(), protobuf_bytes(1, protobuf_bytes(1, user_id))),
+                    (root_id, protobuf_bytes(8, turn_id)),
+                ],
+            )
+            connection.execute(
+                "INSERT INTO meta VALUES('0', ?)",
+                (json.dumps({"latestRootBlobId": root_id}).encode().hex(),),
+            )
+        (directory / "meta.json").write_text(
+            json.dumps({"schemaVersion": 1, "title": "private"}),
+            encoding="utf-8",
+        )
+        timestamp = datetime(2026, 8, 7, 12, 0, tzinfo=WARSAW).timestamp()
+        os.utime(store, (timestamp, timestamp))
+
+        result = collect_cursor_cli(self.context)
+
+        self.assertEqual(result.session_counts()[DAY], 1)
+        self.assertEqual(result.prompts[DAY], 1)
+        self.assertIn("ACP", result.coverage.detail)
+        with self.database.connect() as connection:
+            snapshot = connection.execute(
+                "SELECT total, source_key FROM source_snapshots WHERE harness='Cursor CLI'"
+            ).fetchone()
+        self.assertEqual(snapshot["total"], 1)
+        self.assertNotIn("acp-session-1", snapshot["source_key"])
+        self.assertNotIn("private", str(snapshot))
+
+    def test_opencode_reads_sqlite_roles_without_storing_text(self) -> None:
+        path = self.home / ".local/share/opencode/opencode.db"
+        path.parent.mkdir(parents=True)
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    time_created INTEGER,
+                    time_updated INTEGER,
+                    title TEXT,
+                    directory TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    time_created INTEGER,
+                    time_updated INTEGER,
+                    data TEXT
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO session VALUES(?, ?, ?, ?, ?)",
+                ("ses_test1", 1786104000000, 1786104060000, "private title", "/secret/path"),
+            )
+            connection.executemany(
+                "INSERT INTO message VALUES(?, ?, ?, ?, ?)",
+                [
+                    (
+                        "msg-user",
+                        "ses_test1",
+                        1786104000000,
+                        1786104000000,
+                        json.dumps({"role": "user", "time": {"created": 1786104000000}}),
+                    ),
+                    (
+                        "msg-assistant",
+                        "ses_test1",
+                        1786104060000,
+                        1786104060000,
+                        json.dumps({"role": "assistant", "time": {"created": 1786104060000}}),
+                    ),
+                    (
+                        "msg-system",
+                        "ses_test1",
+                        1786104120000,
+                        1786104120000,
+                        json.dumps({"role": "system", "time": {"created": 1786104120000}}),
+                    ),
+                ],
+            )
+
+        result = collect_opencode(self.context)
+
+        self.assertEqual(result.session_counts()[DAY], 1)
+        self.assertEqual(result.prompts[DAY], 2)
+        self.assertEqual(result.coverage.status, "full")
+        self.assertNotIn("private", result.coverage.detail)
+        self.assertNotIn("ses_test1", result.coverage.detail)
+
     def test_hermes_opencode_gemini_and_amp_native_stores(self) -> None:
         hermes = self.home / ".hermes/state.db"
         hermes.parent.mkdir(parents=True)
@@ -574,6 +681,9 @@ esac
             encoding="utf-8",
         )
         amp.chmod(0o700)
+        login = self.home / ".local/share/amp/session.json"
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text("{}\n", encoding="utf-8")
         amp_result = collect_amp(self.context)
 
         self.assertEqual(collect_hermes(self.context).prompts[DAY], 2)
@@ -583,6 +693,22 @@ esac
         self.assertEqual(amp_result.session_counts()[DAY], 1)
         self.assertEqual(amp_result.prompts[DAY], 2)
         self.assertEqual(amp_result.coverage.status, "full")
+
+    def test_amp_does_not_run_cli_without_local_login(self) -> None:
+        marker = self.root / "amp-ran"
+        amp = self.home / ".amp/bin/amp"
+        amp.parent.mkdir(parents=True)
+        amp.write_text(
+            f"#!/bin/sh\nprintf ran > '{marker}'\nexit 0\n",
+            encoding="utf-8",
+        )
+        amp.chmod(0o700)
+
+        result = collect_amp(self.context)
+
+        self.assertEqual(result.coverage.status, "unavailable")
+        self.assertFalse(marker.exists())
+        self.assertEqual(result.session_counts(), {})
 
     def test_git_counts_unique_local_commit_from_reflog(self) -> None:
         repo = self.code / "repo"
