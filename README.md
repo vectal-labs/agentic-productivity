@@ -6,29 +6,15 @@ I wanted to see whether spending time on different tools, setups and internal so
 
 ## Setup
 
-1. Clone this repo and install the app + LaunchAgent:
+Clone this repo and run the installer:
 
-   ```sh
-   ./scripts/install.sh
-   ```
+```sh
+./scripts/install.sh
+```
 
-2. Store your Discord webhook in the Keychain:
+It walks you through everything: installs the app and LaunchAgent, asks for your Discord webhook (stored in macOS Keychain, hidden input), and finishes by sending a test report to your channel so you see the charts right away.
 
-   ```sh
-   read -r -s DISCORD_WEBHOOK
-   printf '%s\n' "$DISCORD_WEBHOOK" | ./bin/agentic-productivity configure-webhook
-   unset DISCORD_WEBHOOK
-   ```
-
-3. Verify the install without sending anything:
-
-   ```sh
-   ./bin/agentic-productivity doctor
-   ./bin/agentic-productivity mock
-   ./bin/agentic-productivity status
-   ```
-
-The LaunchAgent checks for agent sessions every five minutes and sends yesterday's report at 08:00 Europe/Warsaw. It catches up after wake.
+The LaunchAgent then checks for agent sessions every five minutes and sends yesterday's report at 08:00 in your local timezone. It catches up after wake.
 
 Every morning it sends those charts to a private Discord channel:
 
