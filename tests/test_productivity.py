@@ -1047,6 +1047,8 @@ esac
 
         self.assertNotIn(sensitive, serialized)
         self.assertNotIn("private-session-id", serialized)
+        self.assertNotIn("Partial coverage", report.content)
+        self.assertNotIn("All installed collectors", report.content)
         self.assertEqual(len(report.charts), 3)
         self.assertEqual(len(report.charts[0].config["data"]["labels"]), DEFAULT_REPORT_DAYS)
         for chart in report.charts:

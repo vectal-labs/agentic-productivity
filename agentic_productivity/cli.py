@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .collectors import CollectorContext, collect_all, collect_cursor_cli
+from .collectors import (
+    CollectorContext,
+    collect_all,
+    collect_cursor_cli,
+    detect_code_roots,
+)
 from .database import Database
 from .local_timezone import local_timezone
 from .reporting import (
@@ -41,6 +46,28 @@ def _database(home: Path) -> Database:
     return Database(_state_dir(home) / "metrics.sqlite3")
 
 
+def _code_root_override() -> Path | None:
+    value = os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT")
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _code_roots(
+    database: Database,
+    home: Path,
+    now: datetime,
+    *,
+    refresh: bool,
+) -> tuple[Path, ...]:
+    override = _code_root_override()
+    if override is not None:
+        return (override,)
+    if refresh:
+        detection = detect_code_roots(home)
+        database.replace_code_roots(detection.roots, now)
+        return detection.roots
+    return database.code_roots()
+
+
 def _parse_day(value: str) -> date:
     try:
         return date.fromisoformat(value)
@@ -60,13 +87,21 @@ def _emit(value: dict[str, Any], as_json: bool) -> None:
 
 
 def _collect(
-    database: Database, home: Path, *, end: date, days: int, now: datetime
+    database: Database,
+    home: Path,
+    *,
+    end: date,
+    days: int,
+    now: datetime,
+    refresh_code_roots: bool = True,
 ) -> dict[str, Any]:
     start = end - timedelta(days=days - 1)
     zone = now.tzinfo or local_timezone()
     context = CollectorContext(
         home=home,
-        code_root=Path(os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT", home / "code")),
+        code_roots=_code_roots(
+            database, home, now, refresh=refresh_code_roots
+        ),
         start=start,
         end=end,
         database=database,
@@ -93,7 +128,7 @@ def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[s
     zone = now.tzinfo or local_timezone()
     context = CollectorContext(
         home=home,
-        code_root=Path(os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT", home / "code")),
+        code_roots=_code_roots(database, home, now, refresh=False),
         start=now.date(),
         end=now.date(),
         database=database,
@@ -206,7 +241,8 @@ def _doctor(home: Path, database: Database, zone) -> dict[str, Any]:
         "grok",
     )
     state = _state_dir(home)
-    code_root = Path(os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT", home / "code"))
+    override = _code_root_override()
+    code_roots = (override,) if override is not None else database.code_roots()
     state.mkdir(parents=True, exist_ok=True)
     probe = state / ".write-probe"
     writable = False
@@ -217,10 +253,11 @@ def _doctor(home: Path, database: Database, zone) -> dict[str, Any]:
     except OSError:
         pass
     return {
-        "ok": writable and code_root.exists(),
+        "ok": writable and bool(code_roots) and all(root.is_dir() for root in code_roots),
         "version": __version__,
         "timezone": getattr(zone, "key", None) or str(zone),
-        "code_root": str(code_root),
+        "code_roots": [str(root) for root in code_roots],
+        "code_roots_source": "override" if override is not None else "detected",
         "state_dir": str(state),
         "state_writable": writable,
         "webhook_configured": load_webhook() is not None,

@@ -24,7 +24,7 @@ INSTRUCTION_ROLES = {"user", "system", "developer"}
 @dataclass(frozen=True)
 class CollectorContext:
     home: Path
-    code_root: Path
+    code_roots: tuple[Path, ...]
     start: date
     end: date
     database: Database
@@ -1506,10 +1506,8 @@ def collect_omp(context: CollectorContext) -> HarnessResult:
     )
 
 
-def _discover_git_roots(code_root: Path) -> list[Path]:
-    if not code_root.exists():
-        return []
-    ignored = {
+GIT_SCAN_IGNORED_DIRECTORIES = frozenset(
+    {
         ".git",
         "node_modules",
         "vendor",
@@ -1520,11 +1518,59 @@ def _discover_git_roots(code_root: Path) -> list[Path]:
         ".next",
         ".cache",
     }
+)
+
+
+@dataclass(frozen=True)
+class CodeRootDetection:
+    roots: tuple[Path, ...]
+    repository_count: int
+
+
+def _pruned_git_directories(
+    directories: list[str], *, home_scan: bool
+) -> list[str]:
+    ignored = GIT_SCAN_IGNORED_DIRECTORIES
+    if home_scan:
+        ignored = ignored | {"Library", ".Trash"}
+    return [
+        name
+        for name in directories
+        if not name.startswith(".") and name not in ignored
+    ]
+
+
+def detect_code_roots(home: Path) -> CodeRootDetection:
+    home = home.expanduser().resolve()
+    if not home.is_dir():
+        return CodeRootDetection((), 0)
+
+    repositories: set[Path] = set()
+    for current, directories, files in os.walk(home, topdown=True, followlinks=False):
+        if ".git" in directories or ".git" in files:
+            repositories.add(Path(current))
+        directories[:] = _pruned_git_directories(directories, home_scan=True)
+
+    roots: set[Path] = set()
+    for repository in repositories:
+        relative = repository.relative_to(home)
+        roots.add(home / relative.parts[0] if relative.parts else home)
+    return CodeRootDetection(
+        tuple(sorted(roots, key=lambda path: str(path).casefold())),
+        len(repositories),
+    )
+
+
+def _discover_git_roots(code_root: Path) -> list[Path]:
+    if not code_root.exists():
+        return []
     roots: list[Path] = []
-    for current, directories, files in os.walk(code_root):
-        directories[:] = [name for name in directories if name not in ignored]
-        if ".git" in files or (Path(current) / ".git").is_dir():
+    for current, directories, files in os.walk(
+        code_root, topdown=True, followlinks=False
+    ):
+        if ".git" in files or ".git" in directories:
             roots.append(Path(current))
+        directories[:] = _pruned_git_directories(directories, home_scan=False)
     return roots
 
 
@@ -1543,12 +1589,21 @@ def collect_commits(context: CollectorContext) -> CommitResult:
     harness = "Git"
     if not _command_installed("git"):
         return CommitResult({}, Coverage(harness, False, "unavailable", "git is not installed"))
-    roots = _discover_git_roots(context.code_root)
-    if not context.code_root.exists():
-        return CommitResult({}, Coverage(harness, True, "error", "code root is missing"))
+    if not context.code_roots:
+        return CommitResult({}, Coverage(harness, True, "error", "no Git roots detected"))
+    roots: dict[str, Path] = {}
+    missing_roots = 0
+    for code_root in context.code_roots:
+        if not code_root.is_dir():
+            missing_roots += 1
+            continue
+        for root in _discover_git_roots(code_root):
+            roots[str(root.resolve())] = root
+    if missing_roots == len(context.code_roots):
+        return CommitResult({}, Coverage(harness, True, "error", "Git roots are missing"))
     common_roots: dict[str, Path] = {}
-    errors = 0
-    for root in roots:
+    errors = missing_roots
+    for root in roots.values():
         resolved = _git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root)
         if resolved.returncode != 0:
             errors += 1
@@ -1611,7 +1666,10 @@ def collect_commits(context: CollectorContext) -> CommitResult:
     for day, _, _ in unique.values():
         counts[day] = counts.get(day, 0) + 1
     status = "partial" if errors else "full"
-    detail = f"{len(common_roots)} unique Git repositories"
+    detail = (
+        f"{len(common_roots)} unique Git repositories across "
+        f"{len(context.code_roots)} roots"
+    )
     if errors:
         detail += f"; {errors} repositories or identities unreadable"
     return CommitResult(counts, Coverage(harness, True, status, detail))

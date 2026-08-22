@@ -291,18 +291,10 @@ def build_report(
         "sessions": yesterday_sessions,
         "prompts": yesterday_prompts,
     }
-    partial = [
-        row["harness"]
-        for row in database.health()
-        if row["installed"] and row["status"] != "full"
-    ]
-    coverage = "All installed collectors full"
-    if partial:
-        coverage = "Partial coverage: " + ", ".join(partial)
     content = (
         f"**Agentic productivity — {report_day.isoformat()}**\n"
         f"Commits: **{totals['commits']}** · Sessions: **{totals['sessions']}** · "
-        f"Prompts: **{totals['prompts']}**\n{coverage}"
+        f"Prompts: **{totals['prompts']}**"
     )
     charts = (
         Chart(

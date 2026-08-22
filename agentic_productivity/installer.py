@@ -11,7 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
-from .cli import _collect, _database, _home
+from .cli import _code_root_override, _collect, _database, _home
+from .collectors import CodeRootDetection, detect_code_roots
 from .local_timezone import local_timezone, local_timezone_name
 from .reporting import (
     DEFAULT_REPORT_DAYS,
@@ -128,7 +129,14 @@ def send_test_report() -> None:
     database = _database(home)
     now = datetime.now(local_timezone())
     report_day = now.date() - timedelta(days=1)
-    _collect(database, home, end=report_day, days=DEFAULT_REPORT_DAYS, now=now)
+    _collect(
+        database,
+        home,
+        end=report_day,
+        days=DEFAULT_REPORT_DAYS,
+        now=now,
+        refresh_code_roots=False,
+    )
     report = build_report(database, report_day, DEFAULT_REPORT_DAYS)
     webhook = load_webhook()
     if webhook is None:
@@ -146,6 +154,22 @@ def _ok(text: str) -> None:
 
 def _step(number: int, title: str) -> None:
     print(f"\n{_paint('1', f'{number}. {title}')}")
+
+
+def _display_root(root: Path, home: Path) -> str:
+    try:
+        relative = root.relative_to(home.resolve())
+    except ValueError:
+        return str(root)
+    return "~" if not relative.parts else f"~/{relative}"
+
+
+def _detection_summary(detection: CodeRootDetection, home: Path) -> str:
+    noun = "repo" if detection.repository_count == 1 else "repos"
+    if not detection.roots:
+        return f"Found {detection.repository_count} {noun} in your home folder"
+    locations = ", ".join(_display_root(root, home) for root in detection.roots)
+    return f"Found {detection.repository_count} {noun} in {locations}"
 
 
 @contextmanager
@@ -193,17 +217,29 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
         _step(1, "Environment")
         _ok(f"Python {'.'.join(str(part) for part in sys.version_info[:3])}")
         _ok(f"Timezone {zone}")
-        _step(2, "Application")
+        _step(2, "Git repositories")
+        home = _home()
+        override = _code_root_override()
+        if override is not None:
+            _ok(f"Using Git root override {_display_root(override, home)}")
+        else:
+            with _working("Scanning your home folder for Git repositories"):
+                detection = detect_code_roots(home)
+                _database(home).replace_code_roots(
+                    detection.roots, datetime.now(local_timezone())
+                )
+            _ok(_detection_summary(detection, home))
+        _step(3, "Application")
         with _working("Copying app files"):
             install_files(paths, python)
         _ok(f"Installed {paths['app']}")
         _ok(f"Preserved {paths['state'] / 'metrics.sqlite3'}")
-        _step(3, "LaunchAgent")
+        _step(4, "LaunchAgent")
         if load:
             with _working("Loading the launchd job"):
                 load_agent(paths["plist"])
         _ok(f"{'Loaded' if load else 'Wrote'} {paths['plist']}")
-        _step(4, "Discord webhook")
+        _step(5, "Discord webhook")
         configure_webhook()
         configured = load_webhook() is not None
         _ok(
@@ -212,7 +248,7 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
             else "Webhook skipped; summaries and chart data stay local"
         )
         if configured:
-            _step(5, "Test report")
+            _step(6, "Test report")
             try:
                 with _working("Collecting metrics and sending the report to Discord"):
                     send_test_report()

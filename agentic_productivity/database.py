@@ -58,6 +58,11 @@ CREATE TABLE IF NOT EXISTS collector_baselines (
     started_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS code_roots (
+    path TEXT PRIMARY KEY,
+    detected_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS deliveries (
     report_day TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status IN ('sending', 'sent', 'failed')),
@@ -98,13 +103,27 @@ class Database:
         try:
             connection.executescript(SCHEMA)
             connection.execute(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '2')"
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '3')"
             )
             connection.commit()
             yield connection
             connection.commit()
         finally:
             connection.close()
+
+    def replace_code_roots(self, roots: tuple[Path, ...], detected_at: datetime) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM code_roots")
+            connection.executemany(
+                "INSERT INTO code_roots(path, detected_at) VALUES(?, ?)",
+                ((str(root), detected_at.isoformat()) for root in roots),
+            )
+
+    def code_roots(self) -> tuple[Path, ...]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT path FROM code_roots ORDER BY path")
+            return tuple(Path(str(row["path"])) for row in rows)
 
     def observe_source_total(
         self,
