@@ -43,6 +43,7 @@ from agentic_productivity.collectors import (  # noqa: E402
     collect_opencode,
     collect_pi,
     collect_qwen,
+    detect_code_roots,
 )
 from agentic_productivity.database import Database  # noqa: E402
 from agentic_productivity.model import (  # noqa: E402
@@ -97,7 +98,7 @@ class ProductivityTests(unittest.TestCase):
         self.database = Database(self.root / "state/metrics.sqlite3")
         self.context = CollectorContext(
             home=self.home,
-            code_root=self.code,
+            code_roots=(self.code,),
             start=DAY,
             end=DAY,
             database=self.database,
@@ -112,6 +113,25 @@ class ProductivityTests(unittest.TestCase):
         )
         timestamp = datetime(2026, 8, 8, 0, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(path, (timestamp, timestamp))
+
+    def create_git_commit(self, repo: Path, filename: str) -> None:
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Local"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "local@example.test"],
+            check=True,
+        )
+        (repo / filename).write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", filename], check=True)
+        environment = os.environ.copy()
+        environment["GIT_AUTHOR_DATE"] = "2026-08-07T12:00:00+02:00"
+        environment["GIT_COMMITTER_DATE"] = "2026-08-07T12:00:00+02:00"
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "local"],
+            check=True,
+            env=environment,
+        )
 
     def test_collector_uses_the_selected_local_calendar_day(self) -> None:
         path = self.home / ".codex/sessions/2026/08/07/session.jsonl"
@@ -964,30 +984,74 @@ esac
         self.assertFalse(marker.exists())
         self.assertEqual(result.session_counts(), {})
 
-    def test_git_counts_unique_local_commit_from_reflog(self) -> None:
-        repo = self.code / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Local"], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "config", "user.email", "local@example.test"],
-            check=True,
-        )
-        (repo / "file.txt").write_text("one\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repo), "add", "file.txt"], check=True)
-        environment = os.environ.copy()
-        environment["GIT_AUTHOR_DATE"] = "2026-08-07T12:00:00+02:00"
-        environment["GIT_COMMITTER_DATE"] = "2026-08-07T12:00:00+02:00"
-        subprocess.run(
-            ["git", "-C", str(repo), "commit", "-q", "-m", "local"],
-            check=True,
-            env=environment,
+    def test_git_roots_are_redetected_stored_and_counted_across_locations(self) -> None:
+        projects = self.home / "Projects"
+        development = self.home / "dev"
+        self.create_git_commit(projects / "first", "first.txt")
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CORRAL_PRODUCTIVITY_CODE_ROOT", None)
+            first_roots = cli._code_roots(
+                self.database, self.home, self.context.now, refresh=True
+            )
+            self.create_git_commit(development / "second", "second.txt")
+            roots = cli._code_roots(
+                self.database, self.home, self.context.now, refresh=True
+            )
+
+        self.assertEqual(first_roots, (projects.resolve(),))
+        self.assertEqual(set(roots), {projects.resolve(), development.resolve()})
+        self.assertEqual(
+            set(self.database.code_roots()),
+            {projects.resolve(), development.resolve()},
         )
 
-        result = collect_commits(self.context)
+        result = collect_commits(replace(self.context, code_roots=roots))
+        with mock.patch.object(cli, "load_webhook", return_value=None):
+            doctor = cli._doctor(self.home, self.database, TEST_ZONE)
 
-        self.assertEqual(result.counts[DAY], 1)
+        self.assertEqual(result.counts[DAY], 2)
         self.assertEqual(result.coverage.status, "full")
+        self.assertTrue(doctor["ok"])
+        self.assertEqual(set(doctor["code_roots"]), {str(root) for root in roots})
+        self.assertEqual(doctor["code_roots_source"], "detected")
+
+    def test_git_root_override_skips_detection(self) -> None:
+        override = self.home / "explicit"
+        override.mkdir()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"CORRAL_PRODUCTIVITY_CODE_ROOT": str(override)},
+                clear=False,
+            ),
+            mock.patch.object(cli, "detect_code_roots") as detect,
+        ):
+            roots = cli._code_roots(
+                self.database, self.home, self.context.now, refresh=True
+            )
+
+        self.assertEqual(roots, (override.resolve(),))
+        detect.assert_not_called()
+
+    def test_git_root_detection_skips_hidden_and_pruned_directories(self) -> None:
+        visible = self.home / "Projects/repo/.git"
+        skipped = (
+            self.home / ".hidden/repo/.git",
+            self.home / "Library/repo/.git",
+            self.home / "node_modules/repo/.git",
+            self.home / ".Trash/repo/.git",
+            self.home / "Projects/node_modules/repo/.git",
+            self.home / "Projects/build/repo/.git",
+        )
+        visible.mkdir(parents=True)
+        for path in skipped:
+            path.mkdir(parents=True)
+
+        detection = detect_code_roots(self.home)
+
+        self.assertEqual(detection.repository_count, 1)
+        self.assertEqual(detection.roots, ((self.home / "Projects").resolve(),))
 
     def test_database_is_monotonic_and_delivery_claim_is_idempotent(self) -> None:
         harness = HarnessResult("Codex")

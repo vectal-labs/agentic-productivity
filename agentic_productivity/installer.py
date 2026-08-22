@@ -158,7 +158,7 @@ def _step(number: int, title: str) -> None:
 
 def _display_root(root: Path, home: Path) -> str:
     try:
-        relative = root.relative_to(home.resolve())
+        relative = root.resolve().relative_to(home.resolve())
     except ValueError:
         return str(root)
     return "~" if not relative.parts else f"~/{relative}"

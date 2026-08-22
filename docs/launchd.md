@@ -11,7 +11,7 @@
 
 The interval trigger exists because Cursor CLI does not retain historical per-turn timestamps. Every invocation observes its current native prompt totals. Before 08:00, the command stops after that local observation.
 
-At or after 08:00, the job collects yesterday's metrics and builds the previous 90 days. With a webhook, it sends the report if yesterday has not already been delivered. Without a webhook, it saves the summary and Chart.js data locally without contacting QuickChart. The five-minute interval and `RunAtLoad` provide wake catch-up when the Mac missed 08:00.
+At or after 08:00, the job re-detects top-level Git roots under the home folder, collects yesterday's metrics, and builds the previous 90 days. With a webhook, it sends the report if yesterday has not already been delivered. Without a webhook, it saves the summary and Chart.js data locally without contacting QuickChart. The five-minute interval and `RunAtLoad` provide wake catch-up when the Mac missed 08:00.
 
 SQLite delivery state makes normal runs idempotent. `--force` is the explicit override.
 
@@ -26,11 +26,12 @@ The same fallback is saved when chart rendering or Discord delivery fails. Faile
 `install.sh`:
 
 1. Selects Python 3.11 or newer.
-2. Copies the package into the private Application Support directory.
-3. Renders the plist template with absolute paths.
-4. Sets private permissions.
-5. Replaces and starts the user LaunchAgent.
-6. Preserves the existing SQLite database.
+2. Scans the home folder for Git repositories during interactive installation and stores their top-level roots.
+3. Copies the package into the private Application Support directory.
+4. Renders the plist template with absolute paths.
+5. Sets private permissions.
+6. Replaces and starts the user LaunchAgent.
+7. Preserves the existing SQLite database.
 
 The webhook is not placed in the plist. The runtime reads it from macOS Keychain only when a report is ready.
 

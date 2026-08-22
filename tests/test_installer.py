@@ -42,6 +42,7 @@ class InstallerTests(unittest.TestCase):
         with (
             mock.patch.object(installer, "configure_webhook") as configure,
             mock.patch.object(installer, "send_test_report") as send,
+            mock.patch.object(installer, "detect_code_roots") as detect,
             mock.patch.object(installer, "load_agent") as load_agent,
             mock.patch("sys.stdout", StringIO()) as out,
         ):
@@ -50,6 +51,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         configure.assert_not_called()
         send.assert_not_called()
+        detect.assert_not_called()
         load_agent.assert_not_called()
         self.assertTrue((self.app / "agentic_productivity/cli.py").is_file())
         self.assertTrue((self.app / "agentic_productivity/installer.py").is_file())
@@ -65,6 +67,7 @@ class InstallerTests(unittest.TestCase):
             mock.patch.object(installer, "install_files") as install_files,
             mock.patch.object(installer, "configure_webhook") as configure,
             mock.patch.object(installer, "send_test_report") as send,
+            mock.patch.object(installer, "detect_code_roots") as detect,
             mock.patch("sys.stdout", StringIO()) as out,
         ):
             code = installer.run(dry_run=True, load=True, interactive=True)
@@ -73,12 +76,35 @@ class InstallerTests(unittest.TestCase):
         install_files.assert_not_called()
         configure.assert_not_called()
         send.assert_not_called()
+        detect.assert_not_called()
         text = out.getvalue()
         self.assertIn("Would install app:", text)
         self.assertNotIn("08:00", text)
         self.assertNotIn("every 5 minutes", text)
         self.assertNotIn("Cursor", text)
         self.assertFalse(self.app.exists())
+
+    def test_interactive_install_scans_and_reports_all_git_roots(self) -> None:
+        home = Path(self.temporary.name) / "home"
+        detection = installer.CodeRootDetection(
+            (home / "Projects", home / "dev"), 23
+        )
+        database = mock.Mock()
+        with (
+            mock.patch.object(installer, "_home", return_value=home),
+            mock.patch.object(installer, "_database", return_value=database),
+            mock.patch.object(installer, "detect_code_roots", return_value=detection) as detect,
+            mock.patch.object(installer, "install_files"),
+            mock.patch.object(installer, "configure_webhook"),
+            mock.patch.object(installer, "load_webhook", return_value=None),
+            mock.patch("sys.stdout", StringIO()) as out,
+        ):
+            code = installer.run(dry_run=False, load=False, interactive=True)
+
+        self.assertEqual(code, 0)
+        detect.assert_called_once_with(home)
+        database.replace_code_roots.assert_called_once()
+        self.assertIn("Found 23 repos in ~/Projects, ~/dev", out.getvalue())
 
     def test_local_timezone_uses_the_os_zone_name(self) -> None:
         with (

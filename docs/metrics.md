@@ -2,7 +2,9 @@
 
 ## 1. Unique local commits
 
-- Scan Git repositories recursively under `~/code`.
+- Scan the top-level Git roots detected under the user's home folder.
+- Re-detect those roots for each daily report so new locations are included.
+- Skip hidden folders, `Library`, `.Trash`, dependency folders, caches, and build output. `CORRAL_PRODUCTIVITY_CODE_ROOT` bypasses detection when explicitly set.
 - Deduplicate primary checkouts and linked worktrees by their shared Git common directory.
 - Read creation events from all reflogs within the requested date range.
 - Include commits authored or committed with an email configured in that repository.

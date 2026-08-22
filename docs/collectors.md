@@ -4,7 +4,7 @@ Collectors read native local stores whenever possible. Paths are relative to the
 
 | Harness | Native source | Current contract |
 |---|---|---|
-| Git | `~/code/**/.git` and shared reflogs | Full when repositories and local Git identities are readable |
+| Git | Auto-detected top-level roots under the home folder, then shared reflogs | Full when repositories and local Git identities are readable |
 | Codex | `~/.codex/sessions`, `~/.codex/archived_sessions` | Sessions and instruction-role messages |
 | Claude Code | `~/.claude/projects` | Parent and subagent sessions, excluding tool results |
 | Cursor GUI | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | Composer sessions and user message headers |
@@ -34,3 +34,4 @@ Collectors read native local stores whenever possible. Paths are relative to the
 - Amp's CLI can open a browser login page. The collector refuses to start it without a local login file, and sets `BROWSER` to a no-op.
 - Empty session files with no real turn (title slot or header only) are not counted.
 - Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp.
+- Git roots are stored only in the local aggregate database. Reports contain repository and root counts, never paths or repository names.
