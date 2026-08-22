@@ -4,25 +4,6 @@ I wanted to see whether spending time on different tools, setups and internal so
 
 ![Example report: three 90-day charts](docs/example-graph.png)
 
-Every morning it sends those charts to a private Discord channel:
-
-- unique local Git commits
-- active agent sessions, split by harness
-- instruction-bearing prompts, split by harness
-
-Your prompts, paths, and identities never leave your Mac — only daily counts go to quickchart.io to render the charts.
-
-90-day window, trendline on every chart.
-
-## Requirements
-
-- Apple Silicon Mac
-- Python 3.11 or newer
-- Git
-- internet access to QuickChart and Discord during report delivery
-
-No third-party Python dependencies.
-
 ## Setup
 
 1. Clone this repo and install the app + LaunchAgent:
@@ -48,6 +29,25 @@ No third-party Python dependencies.
    ```
 
 The LaunchAgent checks for agent sessions every five minutes and sends yesterday's report at 08:00 Europe/Warsaw. It catches up after wake.
+
+Every morning it sends those charts to a private Discord channel:
+
+- unique local Git commits
+- active agent sessions, split by harness
+- instruction-bearing prompts, split by harness
+
+Your prompts, paths, and identities never leave your Mac — only daily counts go to quickchart.io to render the charts.
+
+90-day window, trendline on every chart.
+
+## Requirements
+
+- Apple Silicon Mac
+- Python 3.11 or newer
+- Git
+- internet access to QuickChart and Discord during report delivery
+
+No third-party Python dependencies.
 
 ## Commands
 
