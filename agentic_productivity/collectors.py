@@ -126,6 +126,30 @@ def _content_has_instruction(content: Any) -> bool:
     return False
 
 
+class _PromptCopies:
+    """Drop reprinted prompts. Same native id and timestamp counts once."""
+
+    def __init__(self) -> None:
+        self._seen: set[tuple[str, str]] = set()
+
+    def take(self, entry_id: Any, timestamp: Any, fallback: Any = None) -> bool:
+        ident = "" if entry_id is None else str(entry_id).strip()
+        stamp = "" if timestamp is None else str(timestamp)
+        if not ident and fallback is not None:
+            ident = hashlib.sha256(
+                json.dumps(
+                    fallback, sort_keys=True, separators=(",", ":"), default=str
+                ).encode()
+            ).hexdigest()
+        if not ident and not stamp:
+            return True
+        key = (ident, stamp)
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+
 def collect_codex(context: CollectorContext) -> HarnessResult:
     harness = "Codex"
     roots = [context.home / ".codex/sessions", context.home / ".codex/archived_sessions"]
@@ -135,39 +159,39 @@ def collect_codex(context: CollectorContext) -> HarnessResult:
         result.coverage = Coverage(harness, False, "absent")
         return result
     files = _recent_files(roots, "*.jsonl", context.start_timestamp)
-    seen_prompts: set[tuple[str, str, int]] = set()
+    copies = _PromptCopies()
     for path in files:
         session_id = path.stem
         activity: set[date] = set()
-        prompts: list[tuple[date, str, int]] = []
-        occurrences: dict[str, int] = {}
+        prompts: list[date] = []
+        real_turn = False
         for row in _json_lines(path):
             payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
             if row.get("type") == "session_meta":
                 session_id = str(payload.get("id") or payload.get("session_id") or session_id)
+                continue
             day = _day(row.get("timestamp") or payload.get("timestamp"))
-            if context.includes(day):
-                activity.add(day)
-            if (
-                day is not None
-                and context.includes(day)
-                and row.get("type") == "response_item"
+            is_instruction = (
+                row.get("type") == "response_item"
                 and payload.get("type") == "message"
                 and payload.get("role") in INSTRUCTION_ROLES
-            ):
-                digest = hashlib.sha256(
-                    json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8")
-                ).hexdigest()
-                occurrence = occurrences.get(digest, 0)
-                occurrences[digest] = occurrence + 1
-                prompts.append((day, digest, occurrence))
+            )
+            if is_instruction:
+                real_turn = True
+            if context.includes(day):
+                activity.add(day)
+                if is_instruction and copies.take(
+                    payload.get("id"),
+                    row.get("timestamp") or payload.get("timestamp"),
+                    row,
+                ):
+                    prompts.append(day)
+        if not real_turn:
+            continue
         for day in activity:
             result.add_session(day, session_id)
-        for day, digest, occurrence in prompts:
-            key = (session_id, digest, occurrence)
-            if key not in seen_prompts:
-                seen_prompts.add(key)
-                result.add_prompt(day)
+        for day in prompts:
+            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -181,25 +205,33 @@ def collect_claude(context: CollectorContext) -> HarnessResult:
         result.coverage = Coverage(harness, False, "absent")
         return result
     files = _recent_files([root], "*.jsonl", context.start_timestamp)
+    copies = _PromptCopies()
     for path in files:
         session_id = path.stem
         agent_id = ""
         activity: set[date] = set()
         prompts: list[date] = []
+        real_turn = False
         for row in _json_lines(path):
             session_id = str(row.get("sessionId") or session_id)
             agent_id = str(row.get("agentId") or agent_id)
             day = _day(row.get("timestamp"))
-            if context.includes(day):
-                activity.add(day)
             message = row.get("message") if isinstance(row.get("message"), dict) else {}
-            if (
-                context.includes(day)
-                and row.get("type") == "user"
+            is_instruction = (
+                row.get("type") == "user"
                 and message.get("role") == "user"
                 and _content_has_instruction(message.get("content"))
-            ):
-                prompts.append(day)
+            )
+            if is_instruction:
+                real_turn = True
+            if context.includes(day):
+                activity.add(day)
+                if is_instruction and copies.take(
+                    row.get("uuid") or row.get("id"), row.get("timestamp"), row
+                ):
+                    prompts.append(day)
+        if not real_turn:
+            continue
         identity = f"{session_id}:{agent_id}" if "/subagents/" in str(path) else session_id
         for day in activity:
             result.add_session(day, identity)
@@ -218,24 +250,39 @@ def _collect_pi_family(
         result.coverage = Coverage(harness, False, "absent")
         return result
     files = _recent_files([root], "*.jsonl", context.start_timestamp)
+    copies = _PromptCopies()
     for path in files:
         session_id = path.stem
         activity: set[date] = set()
         prompts: list[date] = []
+        real_turn = False
         for row in _json_lines(path):
-            if row.get("type") == "session":
+            row_type = row.get("type")
+            if row_type == "session":
                 session_id = str(row.get("id") or session_id)
+                continue
+            if row_type == "title":
+                continue
             day = _day(row.get("timestamp"))
-            if context.includes(day):
-                activity.add(day)
             message = row.get("message") if isinstance(row.get("message"), dict) else {}
-            if (
-                context.includes(day)
-                and row.get("type") == "message"
+            is_init = row_type == "session_init" and _content_has_instruction(
+                row.get("task")
+            )
+            is_instruction = (
+                row_type == "message"
                 and message.get("role") in INSTRUCTION_ROLES
                 and _content_has_instruction(message.get("content"))
-            ):
-                prompts.append(day)
+            )
+            if is_init or is_instruction:
+                real_turn = True
+            if context.includes(day):
+                activity.add(day)
+                if (is_init or is_instruction) and copies.take(
+                    row.get("id"), row.get("timestamp"), row
+                ):
+                    prompts.append(day)
+        if not real_turn:
+            continue
         for day in activity:
             result.add_session(day, session_id)
         for day in prompts:
@@ -253,25 +300,34 @@ def collect_droid(context: CollectorContext) -> HarnessResult:
         result.coverage = Coverage(harness, False, "absent")
         return result
     files = _recent_files([root], "*.jsonl", context.start_timestamp)
+    copies = _PromptCopies()
     for path in files:
         session_id = path.stem
         activity: set[date] = set()
         prompts: list[date] = []
+        real_turn = False
         for row in _json_lines(path):
             if row.get("type") == "session_start":
                 session_id = str(row.get("id") or session_id)
+                continue
             day = _day(row.get("timestamp"))
-            if context.includes(day):
-                activity.add(day)
             message = row.get("message") if isinstance(row.get("message"), dict) else {}
-            if (
-                context.includes(day)
-                and row.get("type") == "message"
+            is_instruction = (
+                row.get("type") == "message"
                 and message.get("role") in INSTRUCTION_ROLES
                 and not str(row.get("id", "")).startswith("context-")
                 and _content_has_instruction(message.get("content"))
-            ):
-                prompts.append(day)
+            )
+            if is_instruction:
+                real_turn = True
+            if context.includes(day):
+                activity.add(day)
+                if is_instruction and copies.take(
+                    row.get("id"), row.get("timestamp"), row
+                ):
+                    prompts.append(day)
+        if not real_turn:
+            continue
         for day in activity:
             result.add_session(day, session_id)
         for day in prompts:
@@ -289,6 +345,7 @@ def _collect_gemini_family(
         result.coverage = Coverage(harness, False, "absent")
         return result
     files = _recent_files([root], "session-*.json", context.start_timestamp)
+    copies = _PromptCopies()
     for path in files:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -297,17 +354,30 @@ def _collect_gemini_family(
         if not isinstance(data, dict):
             continue
         session_id = str(data.get("sessionId") or path.stem)
+        activity: set[date] = set()
+        prompts: list[date] = []
+        real_turn = False
         for message in data.get("messages", []):
             if not isinstance(message, dict):
                 continue
             day = _day(message.get("timestamp"))
-            if not context.includes(day):
-                continue
-            result.add_session(day, session_id)
-            if message.get("type") in INSTRUCTION_ROLES and _content_has_instruction(
+            is_instruction = message.get("type") in INSTRUCTION_ROLES and _content_has_instruction(
                 message.get("content")
-            ):
-                result.add_prompt(day)
+            )
+            if is_instruction:
+                real_turn = True
+            if context.includes(day):
+                activity.add(day)
+                if is_instruction and copies.take(
+                    message.get("id"), message.get("timestamp"), message
+                ):
+                    prompts.append(day)
+        if not real_turn:
+            continue
+        for day in activity:
+            result.add_session(day, session_id)
+        for day in prompts:
+            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -338,6 +408,7 @@ def _collect_opencode_legacy_json(
     context: CollectorContext, result: HarnessResult, root: Path
 ) -> HarnessResult:
     files = _recent_files([root], "*.json", context.start_timestamp)
+    copies = _PromptCopies()
     for path in files:
         try:
             message = json.loads(path.read_text(encoding="utf-8"))
@@ -346,12 +417,15 @@ def _collect_opencode_legacy_json(
         if not isinstance(message, dict):
             continue
         timing = message.get("time") if isinstance(message.get("time"), dict) else {}
-        day = _day(timing.get("created") or timing.get("completed"))
+        stamp = timing.get("created") or timing.get("completed")
+        day = _day(stamp)
         if not context.includes(day):
             continue
         session_id = str(message.get("sessionID") or path.parent.name)
         result.add_session(day, session_id)
-        if message.get("role") in INSTRUCTION_ROLES:
+        if message.get("role") in INSTRUCTION_ROLES and copies.take(
+            message.get("id") or path.stem, stamp, message
+        ):
             result.add_prompt(day)
     result.coverage = Coverage(result.harness, True, "full", f"{len(files)} recent message records")
     return result
@@ -374,24 +448,38 @@ def _collect_opencode_sqlite(
                     result.harness, True, "error", "native message schema is unsupported"
                 )
                 return result
-            for session_id, created_at, updated_at in connection.execute(
-                "SELECT id, time_created, time_updated FROM session"
-            ):
-                for value in (created_at, updated_at):
-                    day = _day(value)
-                    if context.includes(day):
-                        result.add_session(day, str(session_id))
+            copies = _PromptCopies()
+            message_has_id = "id" in message_cols
+            query = (
+                "SELECT id, session_id, time_created, json_extract(data, '$.role') FROM message"
+                if message_has_id
+                else "SELECT NULL, session_id, time_created, json_extract(data, '$.role') FROM message"
+            )
             count = 0
-            for session_id, created_at, role in connection.execute(
-                "SELECT session_id, time_created, json_extract(data, '$.role') FROM message"
-            ):
+            live_sessions: set[str] = set()
+            for message_id, session_id, created_at, role in connection.execute(query):
                 day = _day(created_at)
                 if not context.includes(day):
                     continue
                 count += 1
-                result.add_session(day, str(session_id))
+                identity = str(session_id)
                 if role in INSTRUCTION_ROLES:
-                    result.add_prompt(day)
+                    live_sessions.add(identity)
+                    result.add_session(day, identity)
+                    if copies.take(message_id, created_at, (identity, created_at, role)):
+                        result.add_prompt(day)
+                elif identity in live_sessions:
+                    result.add_session(day, identity)
+            for session_id, created_at, updated_at in connection.execute(
+                "SELECT id, time_created, time_updated FROM session"
+            ):
+                identity = str(session_id)
+                if identity not in live_sessions:
+                    continue
+                for value in (created_at, updated_at):
+                    day = _day(value)
+                    if context.includes(day):
+                        result.add_session(day, identity)
     except sqlite3.Error:
         result.coverage = Coverage(
             result.harness, True, "error", "native session database is unreadable"
@@ -445,6 +533,7 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                 "SELECT session_id, role, timestamp FROM messages WHERE timestamp >= ?",
                 (context.start_timestamp,),
             )
+            copies = _PromptCopies()
             count = 0
             for session_id, role, timestamp in rows:
                 day = _day(timestamp)
@@ -452,7 +541,9 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                     continue
                 count += 1
                 result.add_session(day, str(session_id))
-                if role in INSTRUCTION_ROLES:
+                if role in INSTRUCTION_ROLES and copies.take(
+                    f"{session_id}:{role}", timestamp
+                ):
                     result.add_prompt(day)
             for session_id, started_at in connection.execute(
                 """
@@ -463,7 +554,9 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                 (context.start_timestamp,),
             ):
                 day = _day(started_at)
-                if context.includes(day):
+                if context.includes(day) and copies.take(
+                    f"{session_id}:system_prompt", started_at
+                ):
                     result.add_session(day, str(session_id))
                     result.add_prompt(day)
     except sqlite3.Error:
@@ -494,6 +587,7 @@ def collect_cursor_gui(context: CollectorContext) -> HarnessResult:
     """
     try:
         with _readonly_sqlite(path) as connection:
+            copies = _PromptCopies()
             count = 0
             for composer_id, message_type, created_at in connection.execute(query):
                 day = _day(created_at)
@@ -501,7 +595,9 @@ def collect_cursor_gui(context: CollectorContext) -> HarnessResult:
                     continue
                 count += 1
                 result.add_session(day, str(composer_id))
-                if message_type == 1:
+                if message_type == 1 and copies.take(
+                    f"{composer_id}:{created_at}", created_at
+                ):
                     result.add_prompt(day)
     except sqlite3.Error:
         result.coverage = Coverage(harness, True, "error", "native global database unreadable")
@@ -560,6 +656,7 @@ def _collect_roo_family(
     ) + _recent_files(task_roots, "ui_messages.json", context.start_timestamp)
     task_directories = {path.parent for path in recent}
     unreadable = 0
+    copies = _PromptCopies()
     for task in sorted(task_directories):
         host = "Cursor" if "Cursor/User" in str(task) else "VS Code"
         identity = f"{host}:{task.name}"
@@ -583,9 +680,12 @@ def _collect_roo_family(
             role = message.get("role")
             content = message.get("content")
             if (
-                role in {"system", "developer"}
-                and _content_has_instruction(content)
-            ) or (role == "user" and _roo_initial_task(content)):
+                (
+                    role in {"system", "developer"}
+                    and _content_has_instruction(content)
+                )
+                or (role == "user" and _roo_initial_task(content))
+            ) and copies.take(message.get("ts"), message.get("ts"), (identity, role, day)):
                 result.add_prompt(day)
         try:
             ui_messages = json.loads(ui_path.read_text(encoding="utf-8"))
@@ -606,6 +706,7 @@ def _collect_roo_family(
                 message.get("type") == "say"
                 and message.get("say") == "user_feedback"
                 and str(message.get("text", "")).strip()
+                and copies.take(message.get("ts"), message.get("ts"), (identity, "feedback", day))
             ):
                 result.add_prompt(day)
     detail = f"{len(task_directories)} recent native task histories"

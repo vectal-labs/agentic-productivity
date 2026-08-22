@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import getpass
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from .cli import _collect, _database, _home
+from .collectors import WARSAW
+from .reporting import (
+    DEFAULT_REPORT_DAYS,
+    build_report,
+    load_webhook,
+    post_discord,
+    render_chart,
+    store_webhook,
+)
+
+LABEL = "com.corral.agentic-productivity"
+SKIP_WARNING = (
+    "The daily Discord report is the point of this tool. "
+    "Without a webhook, reports are only locally rendered PNG files."
+)
+WEBHOOK_HELP = """\
+Create a webhook in Discord:
+  Server settings → Integrations → Webhooks → New Webhook
+  Copy the webhook URL."""
+
+
+def local_timezone_name() -> str:
+    try:
+        linked = os.readlink("/etc/localtime")
+        if "/zoneinfo/" in linked:
+            return linked.split("/zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    zone = datetime.now().astimezone().tzinfo
+    return getattr(zone, "key", None) or datetime.now().astimezone().tzname() or "local time"
+
+
+def schedule_line() -> str:
+    return (
+        "Cursor observation every 5 minutes; "
+        f"90-day report at 08:00 {local_timezone_name()} with wake catch-up"
+    )
+
+
+def _paths() -> dict[str, Path]:
+    home = Path.home()
+    support = home / "Library/Application Support/Corral/Agentic Productivity"
+    agents = Path(os.environ.get("CORRAL_PRODUCTIVITY_LAUNCH_AGENTS_DIR", home / "Library/LaunchAgents"))
+    return {
+        "source": Path(__file__).resolve().parents[1],
+        "app": Path(os.environ.get("CORRAL_PRODUCTIVITY_APP_DIR", support / "app")),
+        "state": Path(os.environ.get("CORRAL_PRODUCTIVITY_STATE_DIR", support)),
+        "agents": agents,
+        "logs": Path(os.environ.get("CORRAL_PRODUCTIVITY_LOG_DIR", home / "Library/Logs/Corral")),
+        "plist": agents / f"{LABEL}.plist",
+    }
+
+
+def install_files(paths: dict[str, Path], python: str) -> None:
+    package = paths["app"] / "agentic_productivity"
+    package.mkdir(parents=True, exist_ok=True)
+    for key in ("state", "agents", "logs"):
+        paths[key].mkdir(parents=True, exist_ok=True)
+    for src in (paths["source"] / "agentic_productivity").glob("*.py"):
+        dest = package / src.name
+        shutil.copy2(src, dest)
+        dest.chmod(0o600)
+    for directory in (paths["app"], package, paths["state"], paths["logs"]):
+        directory.chmod(0o700)
+    rendered = (
+        (paths["source"] / "launchd" / f"{LABEL}.plist.in").read_text(encoding="utf-8")
+        .replace("__PYTHON__", python)
+        .replace("__APP_DIR__", str(paths["app"]))
+        .replace("__OUT_LOG__", str(paths["logs"] / "agentic-productivity.out.log"))
+        .replace("__ERR_LOG__", str(paths["logs"] / "agentic-productivity.err.log"))
+    )
+    temp = paths["agents"] / f".{LABEL}.plist.tmp"
+    try:
+        temp.write_text(rendered, encoding="utf-8")
+        if shutil.which("plutil"):
+            subprocess.run(["plutil", "-lint", str(temp)], check=True, capture_output=True)
+        os.replace(temp, paths["plist"])
+        paths["plist"].chmod(0o600)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def load_agent(plist: Path) -> None:
+    if not shutil.which("launchctl"):
+        return
+    uid = os.getuid()
+    target = f"gui/{uid}/{LABEL}"
+    subprocess.run(["launchctl", "bootout", target], capture_output=True, check=False)
+    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=True)
+    subprocess.run(["launchctl", "kickstart", "-k", target], check=True)
+
+
+def confirm_skip_webhook(ask) -> bool:
+    print(SKIP_WARNING)
+    return ask("Are you sure you want to skip? [y/N] ").strip().lower() in {"y", "yes"}
+
+
+def prompt_webhook(*, existing: bool, ask, secret) -> str | None:
+    print(WEBHOOK_HELP)
+    if existing:
+        print("A Discord webhook is already stored in Keychain.")
+        while True:
+            choice = ask("Keep the existing webhook, or replace it? [k/r] ").strip().lower()
+            if choice in {"", "k", "keep"}:
+                return None
+            if choice in {"r", "replace"}:
+                break
+    while True:
+        value = secret("Paste the Discord webhook URL (Enter to skip): ").strip()
+        if value:
+            return value
+        if confirm_skip_webhook(ask):
+            return None
+
+
+def configure_webhook(ask=input, secret=getpass.getpass) -> None:
+    existing = load_webhook() is not None
+    while True:
+        value = prompt_webhook(existing=existing, ask=ask, secret=secret)
+        if value is None:
+            return
+        try:
+            store_webhook(value)
+            return
+        except (ValueError, RuntimeError) as error:
+            print(f"Could not store webhook: {error}")
+            existing = False
+
+
+def send_test_report() -> None:
+    home = _home()
+    database = _database(home)
+    now = datetime.now(WARSAW)
+    report_day = now.date() - timedelta(days=1)
+    _collect(database, home, end=report_day, days=DEFAULT_REPORT_DAYS, now=now)
+    report = build_report(database, report_day, DEFAULT_REPORT_DAYS)
+    webhook = load_webhook()
+    if webhook is None:
+        return
+    post_discord(webhook, report, [render_chart(chart) for chart in report.charts])
+
+
+def _paint(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if sys.stdout.isatty() else text
+
+
+def _ok(text: str) -> None:
+    print(f"  {_paint('32', '✓')} {text}")
+
+
+def _step(number: int, title: str) -> None:
+    print(f"\n{_paint('1', f'{number}. {title}')}")
+
+
+def is_interactive() -> bool:
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
+    paths = _paths()
+    python = os.environ.get("CORRAL_PYTHON") or sys.executable
+    zone = local_timezone_name()
+    if dry_run:
+        print(f"Would install app: {paths['app']}")
+        print(f"Would preserve state: {paths['state'] / 'metrics.sqlite3'}")
+        print(f"Would install LaunchAgent: {paths['plist']}")
+        print(
+            "Would observe Cursor every 5 minutes and send a 90-day "
+            f"report at 08:00 {zone} with wake catch-up"
+        )
+        return 0
+    if interactive:
+        print(f"\n{_paint('1', 'Agentic Productivity installer')}")
+        _step(1, "Environment")
+        _ok(f"Python {'.'.join(str(part) for part in sys.version_info[:3])}")
+        _ok(f"Timezone {zone}")
+        _step(2, "Application")
+    install_files(paths, python)
+    if load:
+        load_agent(paths["plist"])
+    if interactive:
+        _ok(f"Installed {paths['app']}")
+        _ok(f"Preserved {paths['state'] / 'metrics.sqlite3'}")
+        _step(3, "LaunchAgent")
+        _ok(f"{'Loaded' if load else 'Wrote'} {paths['plist']}")
+        _ok(schedule_line())
+        _step(4, "Discord webhook")
+        configure_webhook()
+        configured = load_webhook() is not None
+        _ok("Webhook stored in macOS Keychain" if configured else "Webhook skipped; reports stay local")
+        if configured:
+            _step(5, "Test report")
+            try:
+                send_test_report()
+                _ok("Sent a test report to Discord")
+            except RuntimeError as error:
+                print(f"  Test report failed: {error}. The daily report will retry at 08:00.")
+        print(f"\n{_paint('1', 'Done.')}")
+    print(f"Installed: {paths['app']}")
+    print(f"LaunchAgent: {paths['plist']}")
+    print(f"State: {paths['state'] / 'metrics.sqlite3'}")
+    print(f"Schedule: {schedule_line()}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    dry_run = False
+    load = True
+    for argument in argv if argv is not None else sys.argv[1:]:
+        if argument == "--dry-run":
+            dry_run = True
+        elif argument == "--no-load":
+            load = False
+        else:
+            print(f"install: unknown argument: {argument}", file=sys.stderr)
+            return 2
+    return run(dry_run=dry_run, load=load, interactive=is_interactive() and not dry_run)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

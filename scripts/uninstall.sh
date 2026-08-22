@@ -15,7 +15,7 @@ if [ -f "$PLIST" ]; then
   rm -- "$PLIST"
 fi
 if [ -d "$APP_ROOT" ]; then
-  for file in __init__.py cli.py collectors.py database.py model.py reporting.py; do
+  for file in __init__.py cli.py collectors.py database.py installer.py model.py reporting.py; do
     if [ -f "$APP_ROOT/agentic_productivity/$file" ]; then
       rm -- "$APP_ROOT/agentic_productivity/$file"
     fi
