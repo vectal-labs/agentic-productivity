@@ -21,6 +21,7 @@
 ## Git
 
 - Do not push to GitHub unless the User asks you to.
+- When asked to push, use a simple direct Git commit and push; do not add production locks or deployment workflows.
 
 ## Subagents
 
