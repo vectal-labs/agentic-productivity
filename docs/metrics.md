@@ -12,7 +12,9 @@
 ## 2. Active agent sessions
 
 - Count a session on every Warsaw calendar day where its native registry records activity.
+- Do not count a session file that has no real turn. A real turn is an instruction-bearing message or a `session_init` entry. Empty drafts do not count.
 - Include GUI, CLI, headless, resumed, parent, subagent, delegated, and automated sessions.
+- Each native child transcript is its own session, including OMP task files and advisor files. Do not fold them into the parent.
 - Deduplicate repeated records using the native session identity within each harness.
 - Keep harnesses separate in storage and charts.
 
@@ -21,6 +23,7 @@
 - Count stored inputs with user, system, or developer roles when they contain an instruction.
 - Include human prompts, automation, system setup, parent-agent delegation, and subagent instructions.
 - Exclude assistant responses, tool results, empty messages, and duplicate storage copies.
+- Deduplicate copied prompts within each harness by native entry identity plus timestamp, across files. A fork or export that reprints the same entry counts once. New turns in the child file still count.
 - Never store prompt text in the aggregate database.
 
 ## Time window

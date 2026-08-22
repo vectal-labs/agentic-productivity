@@ -10,6 +10,8 @@ Every morning it sends those charts to a private Discord channel:
 - active agent sessions, split by harness
 - instruction-bearing prompts, split by harness
 
+Your prompts, paths, and identities never leave your Mac — only daily counts go to quickchart.io to render the charts.
+
 90-day window, trendline on every chart.
 
 ## Requirements

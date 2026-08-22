@@ -18,7 +18,7 @@
 - Never commit the Discord webhook, SQLite state, logs, session data, or other secrets.
 - Never send paths, repository names, identities, session IDs, or prompt text outside the Mac.
 - Never turn a failed, unreadable, or unsupported collector into a silent zero. Report its coverage state.
-- Keep days on the `Europe/Warsaw` calendar.
+- Keep days on the user's local Mac calendar (supersedes Europe/Warsaw; see ADR 0003).
 - Keep delivery idempotent: one report per report day unless explicitly forced.
 - Keep the webhook in macOS Keychain under `com.corral.agentic-productivity.discord-webhook`.
 
