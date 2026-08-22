@@ -2,7 +2,7 @@
 
 ## Purpose
 
-- Measure whether agentic work increases David's output over long time horizons.
+- Measure whether agentic work increases User's output over long time horizons.
 - Keep the system local, simple, auditable, and independent from any agent runtime.
 - Send one private Discord report each morning with exactly three 90-day charts.
 
