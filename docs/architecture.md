@@ -3,7 +3,7 @@
 ## Data flow
 
 1. Native collectors read local agent registries and Git reflogs.
-2. The collector converts events into daily aggregate counts in Europe/Warsaw time.
+2. The collector converts events into daily aggregate counts in the Mac's local timezone.
 3. SQLite stores only daily counts, collector health, hashed Cursor source keys, baselines, and delivery state.
 4. The reporter builds three 90-day Chart.js configurations.
 5. QuickChart renders the aggregate configurations into PNG files.
@@ -15,8 +15,9 @@
 - `agentic_productivity/database.py`: aggregate SQLite schema and idempotent delivery state
 - `agentic_productivity/reporting.py`: chart configuration, trendlines, Keychain access, QuickChart, and Discord delivery
 - `agentic_productivity/cli.py`: manual and scheduled command orchestration
+- `agentic_productivity/local_timezone.py`: operating-system timezone detection
 - `launchd/`: LaunchAgent template
-- `scripts/install.sh`: installs a private application copy and loads launchd
+- `install.sh`: installs a private application copy and loads launchd
 - `tests/`: behavior and privacy tests
 
 ## Storage

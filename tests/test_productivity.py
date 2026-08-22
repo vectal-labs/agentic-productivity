@@ -9,9 +9,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from datetime import date, datetime
 import unittest
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +22,6 @@ sys.path.insert(0, str(PRODUCTIVITY_ROOT))
 
 from agentic_productivity.collectors import (  # noqa: E402
     CollectorContext,
-    WARSAW,
     _collect_pi_family,
     collect_amp,
     collect_antigravity,
@@ -64,6 +65,7 @@ from agentic_productivity.reporting import (  # noqa: E402
 
 DAY = date(2026, 8, 7)
 STAMP = "2026-08-07T12:00:00Z"
+TEST_ZONE = ZoneInfo("Europe/Warsaw")
 
 
 def protobuf_varint(value: int) -> bytes:
@@ -98,7 +100,8 @@ class ProductivityTests(unittest.TestCase):
             start=DAY,
             end=DAY,
             database=self.database,
-            now=datetime(2026, 8, 8, 8, 0, tzinfo=WARSAW),
+            now=datetime(2026, 8, 8, 8, 0, tzinfo=TEST_ZONE),
+            timezone=TEST_ZONE,
         )
 
     def write_jsonl(self, path: Path, rows: list[dict[str, object]]) -> None:
@@ -106,8 +109,36 @@ class ProductivityTests(unittest.TestCase):
         path.write_text(
             "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
         )
-        timestamp = datetime(2026, 8, 8, 0, 0, tzinfo=WARSAW).timestamp()
+        timestamp = datetime(2026, 8, 8, 0, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(path, (timestamp, timestamp))
+
+    def test_collector_uses_the_selected_local_calendar_day(self) -> None:
+        path = self.home / ".codex/sessions/2026/08/07/session.jsonl"
+        self.write_jsonl(
+            path,
+            [
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-08-07T12:30:00Z",
+                    "payload": {"type": "message", "role": "user", "content": []},
+                }
+            ],
+        )
+        los_angeles = replace(
+            self.context,
+            start=date(2026, 8, 7),
+            end=date(2026, 8, 7),
+            timezone=ZoneInfo("America/Los_Angeles"),
+        )
+        auckland = replace(
+            self.context,
+            start=date(2026, 8, 8),
+            end=date(2026, 8, 8),
+            timezone=ZoneInfo("Pacific/Auckland"),
+        )
+
+        self.assertEqual(collect_codex(los_angeles).session_counts()[date(2026, 8, 7)], 1)
+        self.assertEqual(collect_codex(auckland).session_counts()[date(2026, 8, 8)], 1)
 
     def test_codex_counts_instruction_roles_once_and_excludes_duplicate_event(self) -> None:
         path = self.home / ".codex/sessions/2026/08/07/session.jsonl"
@@ -136,7 +167,7 @@ class ProductivityTests(unittest.TestCase):
         archived = self.home / ".codex/archived_sessions/session.jsonl"
         archived.parent.mkdir(parents=True)
         archived.write_bytes(path.read_bytes())
-        timestamp = datetime(2026, 8, 8, 0, 0, tzinfo=WARSAW).timestamp()
+        timestamp = datetime(2026, 8, 8, 0, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(archived, (timestamp, timestamp))
 
         result = collect_codex(self.context)
@@ -290,7 +321,7 @@ class ProductivityTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        stamp = datetime(2026, 8, 8, 0, 0, tzinfo=WARSAW).timestamp()
+        stamp = datetime(2026, 8, 8, 0, 0, tzinfo=TEST_ZONE).timestamp()
         for path in (parent, child, draft):
             os.utime(path, (stamp, stamp))
 
@@ -438,7 +469,7 @@ class ProductivityTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        stamp = datetime(2026, 8, 7, 12, 0, tzinfo=WARSAW).timestamp()
+        stamp = datetime(2026, 8, 7, 12, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(session / "updates.jsonl", (stamp, stamp))
         os.utime(fallback, (stamp, stamp))
 
@@ -517,7 +548,7 @@ class ProductivityTests(unittest.TestCase):
             encoding="utf-8",
         )
         for path in task.iterdir():
-            timestamp = datetime(2026, 8, 7, 14, 0, tzinfo=WARSAW).timestamp()
+            timestamp = datetime(2026, 8, 7, 14, 0, tzinfo=TEST_ZONE).timestamp()
             os.utime(path, (timestamp, timestamp))
         extension = self.home / ".cursor/extensions/saoudrizwan.claude-dev-4.1.4"
         extension.mkdir(parents=True)
@@ -558,7 +589,7 @@ class ProductivityTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        timestamp = datetime(2026, 8, 7, 14, 0, tzinfo=WARSAW).timestamp()
+        timestamp = datetime(2026, 8, 7, 14, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(chat, (timestamp, timestamp))
 
         antigravity = (
@@ -635,7 +666,7 @@ class ProductivityTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        timestamp = datetime(2026, 8, 7, 12, 0, tzinfo=WARSAW).timestamp()
+        timestamp = datetime(2026, 8, 7, 12, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(store, (timestamp, timestamp))
 
         result = collect_cursor_cli(self.context)
@@ -690,7 +721,7 @@ class ProductivityTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        timestamp = datetime(2026, 8, 7, 14, 0, tzinfo=WARSAW).timestamp()
+        timestamp = datetime(2026, 8, 7, 14, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(store, (timestamp, timestamp))
 
         baseline = collect_cursor_cli(self.context)
@@ -742,7 +773,7 @@ class ProductivityTests(unittest.TestCase):
             json.dumps({"schemaVersion": 1, "title": "private"}),
             encoding="utf-8",
         )
-        timestamp = datetime(2026, 8, 7, 12, 0, tzinfo=WARSAW).timestamp()
+        timestamp = datetime(2026, 8, 7, 12, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(store, (timestamp, timestamp))
 
         result = collect_cursor_cli(self.context)
@@ -883,7 +914,7 @@ class ProductivityTests(unittest.TestCase):
             encoding="utf-8",
         )
         for path in (open_message, gemini, qwen):
-            timestamp = datetime(2026, 8, 7, 13, 0, tzinfo=WARSAW).timestamp()
+            timestamp = datetime(2026, 8, 7, 13, 0, tzinfo=TEST_ZONE).timestamp()
             os.utime(path, (timestamp, timestamp))
         amp = self.home / ".amp/bin/amp"
         amp.parent.mkdir(parents=True, exist_ok=True)
@@ -968,7 +999,7 @@ esac
             CommitResult({DAY: 3}, Coverage("Git", True, "full")),
             (harness,),
         )
-        now = datetime(2026, 8, 8, 8, 0, tzinfo=WARSAW)
+        now = datetime(2026, 8, 8, 8, 0, tzinfo=TEST_ZONE)
         self.database.store_collection(collection, now)
         empty = HarnessResult("Codex")
         empty.coverage = Coverage("Codex", True, "full")
@@ -1004,7 +1035,7 @@ esac
                 CommitResult({DAY: 2}, Coverage("Git", True, "full")),
                 (harness,),
             ),
-            datetime(2026, 8, 8, 8, 0, tzinfo=WARSAW),
+            datetime(2026, 8, 8, 8, 0, tzinfo=TEST_ZONE),
         )
 
         report = build_report(self.database, DAY)
@@ -1078,7 +1109,7 @@ esac
         environment["CORRAL_PRODUCTIVITY_STATE_DIR"] = str(self.root / "runtime-state")
         environment["CORRAL_PRODUCTIVITY_CODE_ROOT"] = str(self.code)
         dry_run = subprocess.run(
-            [str(PRODUCTIVITY_ROOT / "scripts/install.sh"), "--dry-run"],
+            [str(PRODUCTIVITY_ROOT / "install.sh"), "--dry-run"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1128,7 +1159,7 @@ esac
         )
         for _ in range(2):
             completed = subprocess.run(
-                [str(PRODUCTIVITY_ROOT / "scripts/install.sh"), "--no-load"],
+                [str(PRODUCTIVITY_ROOT / "install.sh"), "--no-load"],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

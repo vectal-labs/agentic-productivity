@@ -11,7 +11,7 @@
 
 ## 2. Active agent sessions
 
-- Count a session on every Warsaw calendar day where its native registry records activity.
+- Count a session on every local Mac calendar day where its native registry records activity.
 - Do not count a session file that has no real turn. A real turn is an instruction-bearing message or a `session_init` entry. Empty drafts do not count.
 - Include GUI, CLI, headless, resumed, parent, subagent, delegated, and automated sessions.
 - Each native child transcript is its own session, including OMP task files and advisor files. Do not fold them into the parent.
@@ -28,7 +28,7 @@
 
 ## Time window
 
-- Daily boundaries use `Europe/Warsaw`.
+- Daily boundaries use the Mac's automatically detected local timezone.
 - The scheduled report covers the 90 days ending yesterday.
 - Manual collection supports 1 to 366 days.
 

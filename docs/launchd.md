@@ -17,7 +17,7 @@ SQLite delivery state makes normal runs idempotent. `--force` is the explicit ov
 
 ## Installation
 
-`scripts/install.sh`:
+`install.sh`:
 
 1. Selects Python 3.11 or newer.
 2. Copies the package into the private Application Support directory.

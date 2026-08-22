@@ -9,7 +9,7 @@ I wanted to see whether spending time on different tools, setups and internal so
 Clone this repo and run the installer:
 
 ```sh
-./scripts/install.sh
+./install.sh
 ```
 
 It walks you through everything: installs the app and LaunchAgent, asks for your Discord webhook (stored in macOS Keychain), and finishes by sending a test report to your channel so you see the charts right away.
@@ -42,7 +42,7 @@ No third-party Python dependencies.
 ./bin/agentic-productivity collect    # collect metrics
 ./bin/agentic-productivity mock       # render the report without sending
 ./bin/agentic-productivity status     # show collector state
-./scripts/install.sh                  # install app + LaunchAgent
+./install.sh                  # install app + LaunchAgent
 ./scripts/uninstall.sh                # remove both
 ```
 

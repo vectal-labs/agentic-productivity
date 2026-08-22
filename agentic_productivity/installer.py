@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .cli import _collect, _database, _home
-from .collectors import WARSAW
+from .local_timezone import local_timezone, local_timezone_name
 from .reporting import (
     DEFAULT_REPORT_DAYS,
     build_report,
@@ -31,24 +31,6 @@ WEBHOOK_HELP = """\
 Create a webhook in Discord:
   Server settings → Integrations → Webhooks → New Webhook
   Copy the webhook URL."""
-
-
-def local_timezone_name() -> str:
-    try:
-        linked = os.readlink("/etc/localtime")
-        if "/zoneinfo/" in linked:
-            return linked.split("/zoneinfo/", 1)[1]
-    except OSError:
-        pass
-    zone = datetime.now().astimezone().tzinfo
-    return getattr(zone, "key", None) or datetime.now().astimezone().tzname() or "local time"
-
-
-def schedule_line() -> str:
-    return (
-        "Checks agent sessions every 5 minutes; "
-        f"90-day report at 08:00 {local_timezone_name()} with wake catch-up"
-    )
 
 
 def _paths() -> dict[str, Path]:
@@ -144,7 +126,7 @@ def configure_webhook(ask=input) -> None:
 def send_test_report() -> None:
     home = _home()
     database = _database(home)
-    now = datetime.now(WARSAW)
+    now = datetime.now(local_timezone())
     report_day = now.date() - timedelta(days=1)
     _collect(database, home, end=report_day, days=DEFAULT_REPORT_DAYS, now=now)
     report = build_report(database, report_day, DEFAULT_REPORT_DAYS)
@@ -205,10 +187,6 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
         print(f"Would install app: {paths['app']}")
         print(f"Would preserve state: {paths['state'] / 'metrics.sqlite3'}")
         print(f"Would install LaunchAgent: {paths['plist']}")
-        print(
-            "Would check agent sessions every 5 minutes and send a 90-day "
-            f"report at 08:00 {zone} with wake catch-up"
-        )
         return 0
     if interactive:
         print(f"\n{_paint('1', 'Agentic Productivity installer')}")
@@ -225,7 +203,6 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
             with _working("Loading the launchd job"):
                 load_agent(paths["plist"])
         _ok(f"{'Loaded' if load else 'Wrote'} {paths['plist']}")
-        _ok(schedule_line())
         _step(4, "Discord webhook")
         configure_webhook()
         configured = load_webhook() is not None
@@ -246,7 +223,6 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
     print(f"Installed: {paths['app']}")
     print(f"LaunchAgent: {paths['plist']}")
     print(f"State: {paths['state'] / 'metrics.sqlite3'}")
-    print(f"Schedule: {schedule_line()}")
     return 0
 
 

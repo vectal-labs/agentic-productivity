@@ -10,17 +10,14 @@ import sqlite3
 import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
-
 from .database import Database
 from .model import Collection, CommitResult, Coverage, HarnessResult
 
 
-WARSAW = ZoneInfo("Europe/Warsaw")
 INSTRUCTION_ROLES = {"user", "system", "developer"}
 
 
@@ -32,16 +29,17 @@ class CollectorContext:
     end: date
     database: Database
     now: datetime
+    timezone: tzinfo
 
     @property
     def start_timestamp(self) -> float:
-        return datetime.combine(self.start, time.min, WARSAW).timestamp()
+        return datetime.combine(self.start, time.min, self.timezone).timestamp()
 
     def includes(self, day: date | None) -> bool:
         return day is not None and self.start <= day <= self.end
 
 
-def _instant(value: Any) -> datetime | None:
+def _instant(value: Any, zone: tzinfo) -> datetime | None:
     if value is None or isinstance(value, bool):
         return None
     parsed: datetime
@@ -56,7 +54,7 @@ def _instant(value: Any) -> datetime | None:
             if not text:
                 return None
             if re.fullmatch(r"\d+(?:\.\d+)?", text):
-                return _instant(float(text))
+                return _instant(float(text), zone)
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)
@@ -64,11 +62,11 @@ def _instant(value: Any) -> datetime | None:
             return None
     except (OverflowError, OSError, ValueError):
         return None
-    return parsed.astimezone(WARSAW)
+    return parsed.astimezone(zone)
 
 
-def _day(value: Any) -> date | None:
-    parsed = _instant(value)
+def _day(value: Any, zone: tzinfo) -> date | None:
+    parsed = _instant(value, zone)
     return parsed.date() if parsed is not None else None
 
 
@@ -170,7 +168,7 @@ def collect_codex(context: CollectorContext) -> HarnessResult:
             if row.get("type") == "session_meta":
                 session_id = str(payload.get("id") or payload.get("session_id") or session_id)
                 continue
-            day = _day(row.get("timestamp") or payload.get("timestamp"))
+            day = _day(row.get("timestamp") or payload.get("timestamp"), context.timezone)
             is_instruction = (
                 row.get("type") == "response_item"
                 and payload.get("type") == "message"
@@ -215,7 +213,7 @@ def collect_claude(context: CollectorContext) -> HarnessResult:
         for row in _json_lines(path):
             session_id = str(row.get("sessionId") or session_id)
             agent_id = str(row.get("agentId") or agent_id)
-            day = _day(row.get("timestamp"))
+            day = _day(row.get("timestamp"), context.timezone)
             message = row.get("message") if isinstance(row.get("message"), dict) else {}
             is_instruction = (
                 row.get("type") == "user"
@@ -263,7 +261,7 @@ def _collect_pi_family(
                 continue
             if row_type == "title":
                 continue
-            day = _day(row.get("timestamp"))
+            day = _day(row.get("timestamp"), context.timezone)
             message = row.get("message") if isinstance(row.get("message"), dict) else {}
             is_init = row_type == "session_init" and _content_has_instruction(
                 row.get("task")
@@ -310,7 +308,7 @@ def collect_droid(context: CollectorContext) -> HarnessResult:
             if row.get("type") == "session_start":
                 session_id = str(row.get("id") or session_id)
                 continue
-            day = _day(row.get("timestamp"))
+            day = _day(row.get("timestamp"), context.timezone)
             message = row.get("message") if isinstance(row.get("message"), dict) else {}
             is_instruction = (
                 row.get("type") == "message"
@@ -360,7 +358,7 @@ def _collect_gemini_family(
         for message in data.get("messages", []):
             if not isinstance(message, dict):
                 continue
-            day = _day(message.get("timestamp"))
+            day = _day(message.get("timestamp"), context.timezone)
             is_instruction = message.get("type") in INSTRUCTION_ROLES and _content_has_instruction(
                 message.get("content")
             )
@@ -418,7 +416,7 @@ def _collect_opencode_legacy_json(
             continue
         timing = message.get("time") if isinstance(message.get("time"), dict) else {}
         stamp = timing.get("created") or timing.get("completed")
-        day = _day(stamp)
+        day = _day(stamp, context.timezone)
         if not context.includes(day):
             continue
         session_id = str(message.get("sessionID") or path.parent.name)
@@ -458,7 +456,7 @@ def _collect_opencode_sqlite(
             count = 0
             live_sessions: set[str] = set()
             for message_id, session_id, created_at, role in connection.execute(query):
-                day = _day(created_at)
+                day = _day(created_at, context.timezone)
                 if not context.includes(day):
                     continue
                 count += 1
@@ -477,7 +475,7 @@ def _collect_opencode_sqlite(
                 if identity not in live_sessions:
                     continue
                 for value in (created_at, updated_at):
-                    day = _day(value)
+                    day = _day(value, context.timezone)
                     if context.includes(day):
                         result.add_session(day, identity)
     except sqlite3.Error:
@@ -536,7 +534,7 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
             copies = _PromptCopies()
             count = 0
             for session_id, role, timestamp in rows:
-                day = _day(timestamp)
+                day = _day(timestamp, context.timezone)
                 if not context.includes(day):
                     continue
                 count += 1
@@ -553,7 +551,7 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                 """,
                 (context.start_timestamp,),
             ):
-                day = _day(started_at)
+                day = _day(started_at, context.timezone)
                 if context.includes(day) and copies.take(
                     f"{session_id}:system_prompt", started_at
                 ):
@@ -590,7 +588,7 @@ def collect_cursor_gui(context: CollectorContext) -> HarnessResult:
             copies = _PromptCopies()
             count = 0
             for composer_id, message_type, created_at in connection.execute(query):
-                day = _day(created_at)
+                day = _day(created_at, context.timezone)
                 if not context.includes(day):
                     continue
                 count += 1
@@ -673,7 +671,7 @@ def _collect_roo_family(
         for message in api_messages:
             if not isinstance(message, dict):
                 continue
-            day = _day(message.get("ts"))
+            day = _day(message.get("ts"), context.timezone)
             if not context.includes(day):
                 continue
             result.add_session(day, identity)
@@ -698,7 +696,7 @@ def _collect_roo_family(
         for message in ui_messages:
             if not isinstance(message, dict):
                 continue
-            day = _day(message.get("ts"))
+            day = _day(message.get("ts"), context.timezone)
             if not context.includes(day):
                 continue
             result.add_session(day, identity)
@@ -832,7 +830,7 @@ def collect_antigravity(context: CollectorContext) -> HarnessResult:
             )
             identity = identity_bytes.decode("utf-8", errors="replace") or str(index)
             for timestamp in _nested_protobuf_timestamps(entry):
-                day = timestamp.astimezone(WARSAW).date()
+                day = timestamp.astimezone(context.timezone).date()
                 if context.includes(day):
                     result.add_session(day, identity)
     except (ValueError, _CursorStoreError):
@@ -887,7 +885,7 @@ def collect_github_copilot(context: CollectorContext) -> HarnessResult:
     def consume(session: dict[str, Any], path: Path) -> None:
         identity = str(session.get("sessionId") or path.stem)
         for value in (session.get("creationDate"), session.get("lastMessageDate")):
-            day = _day(value)
+            day = _day(value, context.timezone)
             if context.includes(day):
                 result.add_session(day, identity)
         requests = session.get("requests")
@@ -896,7 +894,7 @@ def collect_github_copilot(context: CollectorContext) -> HarnessResult:
         for index, request in enumerate(requests):
             if not isinstance(request, dict):
                 continue
-            day = _day(request.get("timestamp"))
+            day = _day(request.get("timestamp"), context.timezone)
             if not context.includes(day):
                 continue
             result.add_session(day, identity)
@@ -1110,8 +1108,8 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         except OSError:
             unreadable += 1
             continue
-        created_at = _instant(meta.get("createdAtMs"))
-        updated_at = _instant(meta.get("updatedAtMs") or fallback)
+        created_at = _instant(meta.get("createdAtMs"), context.timezone)
+        updated_at = _instant(meta.get("updatedAtMs") or fallback, context.timezone)
         created = created_at.date() if created_at is not None else None
         updated = updated_at.date() if updated_at is not None else None
         if created is None:
@@ -1126,7 +1124,7 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         for day in {created, updated}:
             if context.includes(day):
                 result.add_session(day, session_id)
-        observed = updated_at or datetime.fromtimestamp(fallback, WARSAW)
+        observed = updated_at or datetime.fromtimestamp(fallback, context.timezone)
         attribute_first = (
             created is not None
             and created == updated
@@ -1150,7 +1148,7 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
     detail = f"{readable} recent sessions; exact daily counts after local baseline"
     if acp_sessions:
         detail += f"; {acp_sessions} ACP sessions"
-    baseline_day = baseline.astimezone(WARSAW).date()
+    baseline_day = baseline.astimezone(context.timezone).date()
     range_predates_baseline = context.start <= baseline_day
     if range_predates_baseline:
         detail += f"; day attribution through {baseline_day.isoformat()} incomplete"
@@ -1280,7 +1278,7 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
             if not isinstance(message, dict):
                 continue
             metadata = message.get("meta") if isinstance(message.get("meta"), dict) else {}
-            day = _day(metadata.get("sentAt"))
+            day = _day(metadata.get("sentAt"), context.timezone)
             is_instruction = message.get("role") in INSTRUCTION_ROLES and _content_has_instruction(
                 message.get("content")
             )
@@ -1294,7 +1292,7 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
                 result.add_prompt(day)
         if real_turn:
             for value in (thread.get("created"), thread.get("updatedAt")):
-                day = _day(value)
+                day = _day(value, context.timezone)
                 if context.includes(day):
                     result.add_session(day, identity)
 
@@ -1370,7 +1368,7 @@ def collect_kimi(context: CollectorContext) -> HarnessResult:
         activity: set[date] = set()
         prompts: list[tuple[date, str]] = []
         for row in _json_lines(path):
-            day = _day(row.get("timestamp"))
+            day = _day(row.get("timestamp"), context.timezone)
             if context.includes(day):
                 activity.add(day)
             event_type = row.get("type")
@@ -1471,7 +1469,7 @@ def collect_grok(context: CollectorContext) -> HarnessResult:
         activity: set[date] = set()
         prompts: list[tuple[date, str]] = []
         for row in _json_lines(path):
-            day = _day(row.get("timestamp") or row.get("ts"))
+            day = _day(row.get("timestamp") or row.get("ts"), context.timezone)
             if context.includes(day):
                 activity.add(day)
             if not _grok_user_message(row):
@@ -1561,8 +1559,10 @@ def collect_commits(context: CollectorContext) -> CommitResult:
     creation = re.compile(
         r"^(commit(?: \([^)]*\))?:|merge |cherry-pick:|rebase \((?:pick|reword|edit|squash|fixup|finish)\):)"
     )
-    start_dt = datetime.combine(context.start, time.min, WARSAW).isoformat()
-    end_dt = datetime.combine(context.end + timedelta(days=1), time.min, WARSAW).isoformat()
+    start_dt = datetime.combine(context.start, time.min, context.timezone).isoformat()
+    end_dt = datetime.combine(
+        context.end + timedelta(days=1), time.min, context.timezone
+    ).isoformat()
     for root in common_roots.values():
         email_result = _git("config", "--get-all", "user.email", cwd=root)
         emails = {line.strip().lower() for line in email_result.stdout.splitlines() if line.strip()}
@@ -1604,7 +1604,7 @@ def collect_commits(context: CollectorContext) -> CommitResult:
             sha, author_email, committer_email, committed_at = fields
             if author_email.lower() not in emails and committer_email.lower() not in emails:
                 continue
-            day = _day(committed_at)
+            day = _day(committed_at, context.timezone)
             if context.includes(day):
                 unique[sha] = (day, author_email, committer_email)
     counts: dict[date, int] = {}

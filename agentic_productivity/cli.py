@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .collectors import CollectorContext, WARSAW, collect_all, collect_cursor_cli
+from .collectors import CollectorContext, collect_all, collect_cursor_cli
 from .database import Database
+from .local_timezone import local_timezone
 from .reporting import (
     DEFAULT_REPORT_DAYS,
     build_report,
@@ -60,6 +61,7 @@ def _collect(
     database: Database, home: Path, *, end: date, days: int, now: datetime
 ) -> dict[str, Any]:
     start = end - timedelta(days=days - 1)
+    zone = now.tzinfo or local_timezone()
     context = CollectorContext(
         home=home,
         code_root=Path(os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT", home / "code")),
@@ -67,6 +69,7 @@ def _collect(
         end=end,
         database=database,
         now=now,
+        timezone=zone,
     )
     collection = collect_all(context)
     database.store_collection(collection, now)
@@ -85,6 +88,7 @@ def _collect(
 
 
 def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[str, Any]:
+    zone = now.tzinfo or local_timezone()
     context = CollectorContext(
         home=home,
         code_root=Path(os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT", home / "code")),
@@ -92,6 +96,7 @@ def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[s
         end=now.date(),
         database=database,
         now=now,
+        timezone=zone,
     )
     result = collect_cursor_cli(context)
     database.store_harness_result(result, now.date(), now.date(), now)
@@ -138,13 +143,15 @@ def _execute_report(
         post_discord(webhook, report, images)
     except Exception as error:
         message = str(error)[:300] or "delivery failed"
-        database.finish_delivery(report_day, datetime.now(WARSAW), sent=False, error=message)
+        database.finish_delivery(
+            report_day, datetime.now(now.tzinfo), sent=False, error=message
+        )
         return 1, {"status": "delivery-failed", "error": message, **base}
-    database.finish_delivery(report_day, datetime.now(WARSAW), sent=True)
+    database.finish_delivery(report_day, datetime.now(now.tzinfo), sent=True)
     return 0, {"status": "sent", **base}
 
 
-def _doctor(home: Path, database: Database) -> dict[str, Any]:
+def _doctor(home: Path, database: Database, zone) -> dict[str, Any]:
     commands = (
         "codex",
         "claude",
@@ -175,7 +182,7 @@ def _doctor(home: Path, database: Database) -> dict[str, Any]:
     return {
         "ok": writable and code_root.exists(),
         "version": __version__,
-        "timezone": str(WARSAW),
+        "timezone": getattr(zone, "key", None) or str(zone),
         "code_root": str(code_root),
         "state_dir": str(state),
         "state_writable": writable,
@@ -225,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     home = _home()
     database = _database(home)
-    now = datetime.now(WARSAW)
+    zone = local_timezone()
+    now = datetime.now(zone)
     as_json = bool(getattr(arguments, "json", False))
 
     if arguments.command == "configure-webhook":
@@ -245,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit(database.status(), as_json)
         return 0
     if arguments.command == "doctor":
-        result = _doctor(home, database)
+        result = _doctor(home, database, zone)
         _emit(result, as_json)
         return 0 if result["ok"] else 1
     if arguments.command == "collect":
@@ -271,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
                 _emit(
                     {
                         "status": "waiting-for-08:00",
-                        "timezone": str(WARSAW),
+                        "timezone": getattr(zone, "key", None) or str(zone),
                         "cursor_observation": observation,
                     },
                     as_json,

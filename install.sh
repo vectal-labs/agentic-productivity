@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 
-INSTALL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-SOURCE_DIR=$(CDPATH= cd -- "$INSTALL_DIR/.." && pwd)
+SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 PYTHON_BIN=
 for candidate in "${CORRAL_PYTHON:-}" /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do

@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from agentic_productivity import installer
+from agentic_productivity.local_timezone import local_timezone
 
 
 class InstallerTests(unittest.TestCase):
@@ -54,7 +55,7 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.agents / "com.corral.agentic-productivity.plist").is_file())
         text = out.getvalue()
         self.assertIn("Installed:", text)
-        self.assertIn("report at 08:00", text)
+        self.assertNotIn("every 5 minutes", text)
         self.assertNotIn("Paste the Discord webhook", text)
 
     def test_dry_run_is_non_interactive_and_uses_os_timezone(self) -> None:
@@ -76,6 +77,16 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("report at 08:00 Pacific/Auckland", text)
         self.assertNotIn("Cursor", text)
         self.assertFalse(self.app.exists())
+
+    def test_local_timezone_uses_the_os_zone_name(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch("os.readlink", return_value="/var/db/timezone/zoneinfo/Pacific/Auckland"),
+        ):
+            os.environ.pop("TZ", None)
+            zone = local_timezone()
+
+        self.assertEqual(getattr(zone, "key", None), "Pacific/Auckland")
 
     def test_webhook_skip_requires_explicit_yes(self) -> None:
         for answer in ("", "n", "no", "skip"):
