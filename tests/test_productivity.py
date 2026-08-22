@@ -1029,15 +1029,15 @@ esac
         self.assertEqual(set(doctor["code_roots"]), {str(root) for root in roots})
         self.assertEqual(doctor["code_roots_source"], "detected")
 
-    def test_commits_match_identities_configured_in_any_repository(self) -> None:
-        self.create_git_commit(self.code / "old", "old.txt")
-        # The active repo is configured with a new email but its commit was
-        # made with the old email that only lives in the other repo's config.
+    def test_locally_created_commits_count_regardless_of_identity(self) -> None:
+        self.create_git_commit(self.code / "current", "current.txt")
+        # This commit's email is configured nowhere on the machine — an old
+        # identity the user abandoned. It was still created locally, so it counts.
         self.create_git_commit(
-            self.code / "active",
-            "active.txt",
+            self.code / "renamed",
+            "renamed.txt",
             email="new@example.test",
-            author_email="local@example.test",
+            author_email="ghost@example.test",
         )
 
         result = collect_commits(self.context)
@@ -1045,41 +1045,18 @@ esac
         self.assertEqual(result.counts[DAY], 2)
         self.assertEqual(result.coverage.status, "full")
 
-    def test_commits_without_any_configured_identity_report_error(self) -> None:
-        self.create_git_commit(
-            self.code / "orphan",
-            "one.txt",
-            email=None,
-            author_email="ghost@example.test",
-        )
-
-        with mock.patch.dict(
-            os.environ,
-            {
-                "HOME": str(self.home),
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_CONFIG_SYSTEM": os.devnull,
-            },
-            clear=False,
-        ):
-            result = collect_commits(self.context)
-
-        self.assertEqual(result.counts, {})
-        self.assertEqual(result.coverage.status, "error")
-
-    def test_repositories_with_unmatched_recent_commits_report_partial(self) -> None:
-        self.create_git_commit(self.code / "mine", "mine.txt")
-        self.create_git_commit(
-            self.code / "shared",
-            "shared.txt",
-            author_email="collaborator@example.test",
+    def test_cloned_commits_do_not_count(self) -> None:
+        source = self.home / "outside-roots"
+        self.create_git_commit(source, "upstream.txt")
+        subprocess.run(
+            ["git", "clone", "-q", str(source), str(self.code / "cloned")],
+            check=True,
         )
 
         result = collect_commits(self.context)
 
-        self.assertEqual(result.counts[DAY], 1)
-        self.assertEqual(result.coverage.status, "partial")
-        self.assertIn("matching no known identity", result.coverage.detail)
+        self.assertEqual(result.counts, {})
+        self.assertEqual(result.coverage.status, "full")
 
     def test_git_root_override_skips_detection(self) -> None:
         override = self.home / "explicit"

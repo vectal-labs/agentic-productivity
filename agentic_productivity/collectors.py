@@ -1602,29 +1602,7 @@ def collect_commits(context: CollectorContext) -> CommitResult:
     if missing_roots == len(context.code_roots):
         return CommitResult({}, Coverage(harness, True, "error", "Git roots are missing"))
 
-    # A commit counts when its author or committer email is configured anywhere
-    # on this machine: system, global, conditional include, or any detected
-    # repository's local config. The union is computed fresh at collection time.
-    identities: set[str] = set()
     errors = missing_roots
-    for root in roots.values():
-        configured = _git("config", "--get-all", "user.email", cwd=root)
-        # Exit code 1 means the key is simply not set in this scope chain;
-        # anything else is a real read failure.
-        if configured.returncode not in (0, 1):
-            errors += 1
-            continue
-        identities |= {
-            line.strip().lower() for line in configured.stdout.splitlines() if line.strip()
-        }
-    if not identities:
-        return CommitResult(
-            {},
-            Coverage(
-                harness, True, "error", "no Git identities are configured on this machine"
-            ),
-        )
-
     common_roots: dict[str, Path] = {}
     for root in roots.values():
         resolved = _git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root)
@@ -1633,7 +1611,11 @@ def collect_commits(context: CollectorContext) -> CommitResult:
             continue
         common_roots[resolved.stdout.strip()] = root
 
-    unique: dict[str, tuple[date, str, str]] = {}
+    # A commit counts when a local reflog records its creation (commit, merge,
+    # cherry-pick, or rebase). Reflogs only record actions performed on this
+    # machine, so identity matching is unnecessary and pulled commits never
+    # appear. See docs/metrics.md.
+    unique: dict[str, date] = {}
     creation = re.compile(
         r"^(commit(?: \([^)]*\))?:|merge |cherry-pick:|rebase \((?:pick|reword|edit|squash|fixup|finish)\):)"
     )
@@ -1641,7 +1623,6 @@ def collect_commits(context: CollectorContext) -> CommitResult:
     end_dt = datetime.combine(
         context.end + timedelta(days=1), time.min, context.timezone
     ).isoformat()
-    unmatched_repositories = 0
     for root in common_roots.values():
         reflog = _git(
             "reflog",
@@ -1664,39 +1645,31 @@ def collect_commits(context: CollectorContext) -> CommitResult:
         shown = _git(
             "show",
             "-s",
-            "--format=%H%x00%ae%x00%ce%x00%cI",
+            "--format=%H%x00%cI",
             *sorted(candidates),
             cwd=root,
         )
         if shown.returncode != 0:
             errors += 1
             continue
-        matched = False
         for line in shown.stdout.splitlines():
             fields = line.split("\x00")
-            if len(fields) != 4:
+            if len(fields) != 2:
                 continue
-            sha, author_email, committer_email, committed_at = fields
-            if author_email.lower() not in identities and committer_email.lower() not in identities:
-                continue
-            matched = True
+            sha, committed_at = fields
             day = _day(committed_at, context.timezone)
             if context.includes(day):
-                unique[sha] = (day, author_email, committer_email)
-        if not matched:
-            unmatched_repositories += 1
+                unique[sha] = day
     counts: dict[date, int] = {}
-    for day, _, _ in unique.values():
+    for day in unique.values():
         counts[day] = counts.get(day, 0) + 1
-    status = "partial" if errors or unmatched_repositories else "full"
+    status = "partial" if errors else "full"
     detail = (
         f"{len(common_roots)} unique Git repositories across "
         f"{len(context.code_roots)} roots"
     )
     if errors:
-        detail += f"; {errors} repositories or identities unreadable"
-    if unmatched_repositories:
-        detail += f"; {unmatched_repositories} repositories had recent commits matching no known identity"
+        detail += f"; {errors} repositories unreadable"
     return CommitResult(counts, Coverage(harness, True, status, detail))
 
 

@@ -7,11 +7,9 @@
 - Skip hidden folders, `Library`, `.Trash`, dependency folders, caches, and build output. `CORRAL_PRODUCTIVITY_CODE_ROOT` bypasses detection when explicitly set.
 - Deduplicate primary checkouts and linked worktrees by their shared Git common directory.
 - Read creation events from all reflogs within the requested date range.
-- Include commits authored or committed with an email configured anywhere on the machine: system, global, conditional include, or any detected repository's local config. The union is recomputed at each collection; identities are never stored.
+- Include every commit whose creation (commit, merge, cherry-pick, or rebase) is recorded in a local reflog. Reflogs only record actions performed on this machine, so no email or identity matching is needed and identity changes never affect history.
 - Count each commit hash once, even if several worktrees or refs contain it.
 - Do not count pushes, fetched upstream commits, or branch movements by themselves.
-- If no Git identity is configured anywhere on the machine, report an error instead of an empty count.
-- Report repositories whose recent commits match none of the known identities as partial coverage.
 
 ## 2. Active agent sessions
 
