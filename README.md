@@ -80,5 +80,8 @@ Use `collect --days N` to backfill any local window from 1 to 366 days. The sche
 - [Metric definitions](docs/metrics.md)
 - [Collector registry](docs/collectors.md)
 - [launchd operation](docs/launchd.md)
-- [Current Mac paths](docs/local-paths.md)
 - [Decision records](docs/adr/README.md)
+
+## License
+
+[MIT](LICENSE)
