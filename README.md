@@ -12,41 +12,19 @@ Clone this repo and run the installer:
 ./install.sh
 ```
 
-It walks you through everything: installs the app and LaunchAgent, asks for your Discord webhook (stored in macOS Keychain), and finishes by sending a test report to your channel so you see the charts right away.
+The installer walks you through everything: app, LaunchAgent, and your Discord webhook (stored in macOS Keychain). It ends by sending a test report so you see the charts right away.
 
-The LaunchAgent then checks for agent sessions every five minutes and sends yesterday's report at 08:00 in your local timezone. It catches up after wake.
+Every morning at 08:00 you get three 90-day charts in Discord: Git commits, agent sessions, and prompts — the last two split by harness. Only daily counts leave your Mac (to quickchart.io for rendering); prompts, paths, and identities never do.
 
-Every morning it sends those charts to a private Discord channel:
-
-- unique local Git commits
-- active agent sessions, split by harness
-- instruction-bearing prompts, split by harness
-
-Your prompts, paths, and identities never leave your Mac — only daily counts go to quickchart.io to render the charts.
-
-90-day window, trendline on every chart.
-
-## Requirements
-
-- Apple Silicon Mac
-- Python 3.11 or newer
-- Git
-- internet access to QuickChart and Discord during report delivery
-
-No third-party Python dependencies.
+Needs an Apple Silicon Mac, Python 3.11+, and Git. No third-party dependencies.
 
 ## Commands
 
 ```sh
-./bin/agentic-productivity doctor     # check health
-./bin/agentic-productivity collect    # collect metrics
-./bin/agentic-productivity mock       # render the report without sending
-./bin/agentic-productivity status     # show collector state
-./install.sh                  # install app + LaunchAgent
-./scripts/uninstall.sh                # remove both
+./bin/agentic-productivity doctor   # check health
+./bin/agentic-productivity mock     # preview the report without sending
+./scripts/uninstall.sh              # remove everything
 ```
-
-Use `collect --days N` to backfill any window from 1 to 366 days. The scheduled Discord report uses 90 days.
 
 ## Documentation
 
