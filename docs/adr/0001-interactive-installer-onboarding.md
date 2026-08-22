@@ -25,8 +25,11 @@ Ship exactly one onboarding path: `./scripts/install.sh` as a nice interactive
 TUI experience in the terminal.
 
 - It walks the user through setup step by step with clear, readable output.
-- It prompts for the Discord webhook with hidden input and stores it directly
-  in macOS Keychain. No separate configure step.
+- It prompts for the Discord webhook and stores it directly in macOS
+  Keychain. No separate configure step.
+  (Amended 2026-08-22: input is visible, not hidden. Users paste on their own
+  machine and need to see the URL to confirm the paste worked; hidden input
+  was worse UX for no real security gain.)
 - Timezone is auto-detected from the OS; report time defaults to 08:00 local.
   The installer asks nothing it can figure out itself.
 - No agent-prompt onboarding is offered or documented.

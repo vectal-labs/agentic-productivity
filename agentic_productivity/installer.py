@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import getpass
 import itertools
 import os
 import shutil
@@ -110,7 +109,7 @@ def confirm_skip_webhook(ask) -> bool:
     return ask("Are you sure you want to skip? [y/N] ").strip().lower() in {"y", "yes"}
 
 
-def prompt_webhook(*, existing: bool, ask, secret) -> str | None:
+def prompt_webhook(*, existing: bool, ask) -> str | None:
     print(WEBHOOK_HELP)
     if existing:
         print("A Discord webhook is already stored in Keychain.")
@@ -121,17 +120,17 @@ def prompt_webhook(*, existing: bool, ask, secret) -> str | None:
             if choice in {"r", "replace"}:
                 break
     while True:
-        value = secret("Paste the Discord webhook URL (Enter to skip): ").strip()
+        value = ask("Paste the Discord webhook URL (Enter to skip): ").strip()
         if value:
             return value
         if confirm_skip_webhook(ask):
             return None
 
 
-def configure_webhook(ask=input, secret=getpass.getpass) -> None:
+def configure_webhook(ask=input) -> None:
     existing = load_webhook() is not None
     while True:
-        value = prompt_webhook(existing=existing, ask=ask, secret=secret)
+        value = prompt_webhook(existing=existing, ask=ask)
         if value is None:
             return
         try:

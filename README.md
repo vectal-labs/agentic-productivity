@@ -12,7 +12,7 @@ Clone this repo and run the installer:
 ./scripts/install.sh
 ```
 
-It walks you through everything: installs the app and LaunchAgent, asks for your Discord webhook (stored in macOS Keychain, hidden input), and finishes by sending a test report to your channel so you see the charts right away.
+It walks you through everything: installs the app and LaunchAgent, asks for your Discord webhook (stored in macOS Keychain), and finishes by sending a test report to your channel so you see the charts right away.
 
 The LaunchAgent then checks for agent sessions every five minutes and sends yesterday's report at 08:00 in your local timezone. It catches up after wake.
 

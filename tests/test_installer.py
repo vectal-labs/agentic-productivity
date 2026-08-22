@@ -87,13 +87,11 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue(installer.confirm_skip_webhook(lambda _prompt, value=answer: value))
 
     def test_empty_webhook_keeps_asking_until_skip_is_confirmed(self) -> None:
-        asks = iter(["n", "y"])
-        secrets = iter(["", ""])
+        asks = iter(["", "n", "", "y"])
         with mock.patch("sys.stdout", StringIO()) as out:
             result = installer.prompt_webhook(
                 existing=False,
                 ask=lambda _prompt: next(asks),
-                secret=lambda _prompt: next(secrets),
             )
         self.assertIsNone(result)
         self.assertIn(installer.SKIP_WARNING, out.getvalue())
