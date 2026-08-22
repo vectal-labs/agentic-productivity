@@ -880,7 +880,7 @@ def collect_github_copilot(context: CollectorContext) -> HarnessResult:
     files = _recent_files(roots, "*.json", context.start_timestamp) + _recent_files(
         roots, "*.jsonl", context.start_timestamp
     )
-    seen_requests: set[tuple[str, str]] = set()
+    copies = _PromptCopies()
     unsupported_events = 0
     unreadable = 0
 
@@ -900,10 +900,10 @@ def collect_github_copilot(context: CollectorContext) -> HarnessResult:
             if not context.includes(day):
                 continue
             result.add_session(day, identity)
-            request_id = str(request.get("requestId") or request.get("id") or index)
-            key = (identity, request_id)
-            if key not in seen_requests and _vscode_request_has_instruction(request):
-                seen_requests.add(key)
+            request_id = request.get("requestId") or request.get("id") or index
+            if _vscode_request_has_instruction(request) and copies.take(
+                request_id, request.get("timestamp")
+            ):
                 result.add_prompt(day)
 
     for path in files:
@@ -1116,14 +1116,16 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         updated = updated_at.date() if updated_at is not None else None
         if created is None:
             created = updated
-        for day in {created, updated}:
-            if context.includes(day):
-                result.add_session(day, session_id)
         try:
             total = _cursor_cli_prompt_total(store)
         except _CursorStoreError:
             unreadable += 1
             continue
+        if total == 0:
+            continue
+        for day in {created, updated}:
+            if context.includes(day):
+                result.add_session(day, session_id)
         observed = updated_at or datetime.fromtimestamp(fallback, WARSAW)
         attribute_first = (
             created is not None
@@ -1242,6 +1244,7 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
         capped = True
 
     failed = 0
+    copies = _PromptCopies()
     for thread_id in dict.fromkeys(thread_ids):
         try:
             completed = subprocess.run(
@@ -1268,32 +1271,32 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
             failed += 1
             continue
         identity = str(thread.get("id") or thread_id)
-        for value in (thread.get("created"), thread.get("updatedAt")):
-            day = _day(value)
-            if context.includes(day):
-                result.add_session(day, identity)
-        seen_messages: set[str] = set()
         messages = thread.get("messages")
         if not isinstance(messages, list):
             failed += 1
             continue
+        real_turn = False
         for index, message in enumerate(messages):
             if not isinstance(message, dict):
                 continue
             metadata = message.get("meta") if isinstance(message.get("meta"), dict) else {}
             day = _day(metadata.get("sentAt"))
+            is_instruction = message.get("role") in INSTRUCTION_ROLES and _content_has_instruction(
+                message.get("content")
+            )
+            if is_instruction:
+                real_turn = True
             if not context.includes(day):
                 continue
             result.add_session(day, identity)
-            message_id = str(message.get("messageId") or message.get("protocolMessageID") or index)
-            if message_id in seen_messages:
-                continue
-            seen_messages.add(message_id)
-            if (
-                message.get("role") in INSTRUCTION_ROLES
-                and _content_has_instruction(message.get("content"))
-            ):
+            message_id = message.get("messageId") or message.get("protocolMessageID") or index
+            if is_instruction and copies.take(message_id, metadata.get("sentAt")):
                 result.add_prompt(day)
+        if real_turn:
+            for value in (thread.get("created"), thread.get("updatedAt")):
+                day = _day(value)
+                if context.includes(day):
+                    result.add_session(day, identity)
 
     if failed or capped:
         detail = f"{len(thread_ids) - failed} threads exported"
@@ -1327,6 +1330,15 @@ def collect_prime(context: CollectorContext) -> HarnessResult:
         harness="Prime Agent",
         root=context.home / ".prime/agent/sessions",
         command="prime-agent",
+    )
+
+
+def collect_omp(context: CollectorContext) -> HarnessResult:
+    return _collect_pi_family(
+        context,
+        harness="Oh My Pi",
+        root=context.home / ".omp/agent/sessions",
+        command="omp",
     )
 
 
@@ -1452,6 +1464,7 @@ COLLECTORS: tuple[Callable[[CollectorContext], HarnessResult], ...] = (
     collect_hermes,
     collect_pi,
     collect_prime,
+    collect_omp,
     collect_opencode,
     collect_droid,
     collect_gemini,

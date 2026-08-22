@@ -35,7 +35,9 @@ from agentic_productivity.collectors import (  # noqa: E402
     collect_github_copilot,
     collect_hermes,
     collect_kilo,
+    collect_omp,
     collect_opencode,
+    collect_pi,
     collect_qwen,
 )
 from agentic_productivity.database import Database  # noqa: E402
@@ -225,6 +227,117 @@ class ProductivityTests(unittest.TestCase):
         self.assertEqual(pi_result.prompts[DAY], 1)
         self.assertEqual(droid_result.prompts[DAY], 1)
         self.assertEqual(droid_result.session_counts()[DAY], 1)
+
+    def _omp_title_slot(self, title: str = "draft") -> str:
+        slot = {
+            "type": "title",
+            "v": 1,
+            "title": title,
+            "updatedAt": STAMP,
+            "pad": "",
+        }
+        def encoded(pad: str) -> bytes:
+            slot["pad"] = pad
+            return (json.dumps(slot, separators=(",", ":")) + "\n").encode()
+
+        pad = " " * (256 - len(encoded("")))
+        line = encoded(pad).decode()
+        self.assertEqual(len(line.encode()), 256)
+        return line
+
+    def test_omp_counts_children_and_skips_empty_drafts(self) -> None:
+        root = self.home / ".omp/agent/sessions/project"
+        parent = root / "2026-08-07_parent.jsonl"
+        child = root / "2026-08-07_parent" / "task1.jsonl"
+        draft = root / "2026-08-07_draft.jsonl"
+        user = {
+            "type": "message",
+            "id": "user01ab",
+            "timestamp": STAMP,
+            "message": {"role": "user", "content": [{"type": "text", "text": "go"}]},
+        }
+        parent.parent.mkdir(parents=True)
+        parent.write_text(
+            self._omp_title_slot("parent")
+            + json.dumps({"type": "session", "id": "parent-1", "timestamp": STAMP})
+            + "\n"
+            + json.dumps(user)
+            + "\n",
+            encoding="utf-8",
+        )
+        child.parent.mkdir(parents=True)
+        child.write_text(
+            json.dumps({"type": "session", "id": "child-1", "timestamp": STAMP})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "session_init",
+                    "id": "init01ab",
+                    "timestamp": STAMP,
+                    "task": "review the importer",
+                    "systemPrompt": "you are a reviewer",
+                    "tools": ["read"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        draft.write_text(
+            self._omp_title_slot()
+            + json.dumps({"type": "session", "id": "draft-1", "timestamp": STAMP})
+            + "\n",
+            encoding="utf-8",
+        )
+        stamp = datetime(2026, 8, 8, 0, 0, tzinfo=WARSAW).timestamp()
+        for path in (parent, child, draft):
+            os.utime(path, (stamp, stamp))
+
+        result = collect_omp(self.context)
+
+        self.assertEqual(result.session_counts()[DAY], 2)
+        self.assertEqual(result.prompts[DAY], 2)
+        self.assertEqual(result.coverage.status, "full")
+
+    def test_copied_prompts_count_once_across_files(self) -> None:
+        copied = {
+            "type": "message",
+            "id": "user01ab",
+            "timestamp": STAMP,
+            "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        }
+        follow = {
+            "type": "message",
+            "id": "user02cd",
+            "timestamp": "2026-08-07T13:00:00Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": "again"}]},
+        }
+        parent = self.home / ".pi/agent/sessions/project/01_parent.jsonl"
+        forked = self.home / ".pi/agent/sessions/project/02_fork.jsonl"
+        self.write_jsonl(
+            parent,
+            [
+                {"type": "session", "id": "parent00", "timestamp": STAMP},
+                copied,
+            ],
+        )
+        self.write_jsonl(
+            forked,
+            [
+                {
+                    "type": "session",
+                    "id": "fork0000",
+                    "timestamp": STAMP,
+                    "parentSession": "parent00",
+                },
+                copied,
+                follow,
+            ],
+        )
+
+        result = collect_pi(self.context)
+
+        self.assertEqual(result.session_counts()[DAY], 2)
+        self.assertEqual(result.prompts[DAY], 2)
 
     def test_cursor_gui_uses_header_timestamps_without_reading_message_text(self) -> None:
         path = self.home / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"

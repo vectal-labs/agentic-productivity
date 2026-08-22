@@ -152,6 +152,7 @@ def _doctor(home: Path, database: Database) -> dict[str, Any]:
         "hermes",
         "pi",
         "prime-agent",
+        "omp",
         "opencode",
         "droid",
         "gemini",

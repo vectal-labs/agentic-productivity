@@ -17,6 +17,7 @@ Collectors read native local stores whenever possible. Paths are relative to the
 | Hermes | `~/.hermes/state.db` | Sessions and instruction-role messages |
 | Pi Agent | `~/.pi/agent/sessions` | Sessions and instruction-role messages |
 | Prime Agent | `~/.prime/agent/sessions` | Sessions and instruction-role messages |
+| Oh My Pi | `~/.omp/agent/sessions` | Sessions, instruction-role messages, and `session_init` tasks. Child transcripts are separate sessions |
 | OpenCode | `~/.local/share/opencode/opencode.db`, with `storage/message` as a legacy fallback | Sessions and instruction-role messages |
 | Factory Droid | `~/.factory/sessions` | Sessions and instructions, excluding duplicated context rows |
 | Gemini CLI | `~/.gemini/tmp/**/session-*.json` | Sessions and instruction-role messages |
@@ -29,3 +30,5 @@ Collectors read native local stores whenever possible. Paths are relative to the
 - Antigravity exposes trajectory/session timestamps but not prompt history, so its prompt coverage is partial by design.
 - A collector with unreadable data reports `partial`, `unavailable`, or `error`; it must not silently claim full coverage.
 - Amp's CLI can open a browser login page. The collector refuses to start it without a local login file, and sets `BROWSER` to a no-op.
+- Empty session files with no real turn (title slot or header only) are not counted.
+- Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp.
