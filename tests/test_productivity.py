@@ -33,8 +33,10 @@ from agentic_productivity.collectors import (  # noqa: E402
     collect_droid,
     collect_gemini,
     collect_github_copilot,
+    collect_grok,
     collect_hermes,
     collect_kilo,
+    collect_kimi,
     collect_omp,
     collect_opencode,
     collect_pi,
@@ -338,6 +340,113 @@ class ProductivityTests(unittest.TestCase):
 
         self.assertEqual(result.session_counts()[DAY], 2)
         self.assertEqual(result.prompts[DAY], 2)
+
+    def test_kimi_counts_user_turns_dedupes_and_excludes_injections(self) -> None:
+        main = (
+            self.home
+            / ".kimi-code/sessions/wd_project_ab12/session-uuid-1/agents/main/wire.jsonl"
+        )
+        subagent = (
+            self.home
+            / ".kimi-code/sessions/wd_project_ab12/session-uuid-1/agents/agent-0/wire.jsonl"
+        )
+        self.write_jsonl(
+            main,
+            [
+                {"type": "metadata", "protocol_version": 1, "timestamp": STAMP},
+                {
+                    "type": "turn.prompt",
+                    "timestamp": STAMP,
+                    "origin": {"kind": "user"},
+                    "prompt": "hello world",
+                },
+                {
+                    "type": "context.append_message",
+                    "timestamp": STAMP,
+                    "role": "user",
+                    "origin": {"kind": "user"},
+                    "content": "hello world",
+                },
+                {
+                    "type": "context.append_message",
+                    "timestamp": STAMP,
+                    "role": "user",
+                    "origin": {"kind": "injection"},
+                    "content": "permission reminder",
+                },
+                {
+                    "type": "context.append_loop_event",
+                    "timestamp": STAMP,
+                    "event": {"type": "content.part", "part": {"type": "text"}},
+                },
+                {"type": "usage.record", "timestamp": STAMP, "usage": {"tokens": 5}},
+            ],
+        )
+        self.write_jsonl(
+            subagent,
+            [
+                {
+                    "type": "turn.prompt",
+                    "timestamp": STAMP,
+                    "origin": {"kind": "user"},
+                    "prompt": "delegated instruction",
+                },
+            ],
+        )
+
+        result = collect_kimi(self.context)
+
+        self.assertEqual(result.session_counts()[DAY], 2)
+        self.assertEqual(result.prompts[DAY], 2)
+        self.assertEqual(result.coverage.status, "full")
+
+    def test_grok_reads_native_logs_and_never_reads_community_database(self) -> None:
+        database = self.home / ".grok/grok.db"
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"SQLite format 3\x00")
+        community = collect_grok(self.context)
+        self.assertEqual(community.coverage.status, "unavailable")
+
+        session = self.home / ".grok/sessions/workdir/session-one"
+        session.mkdir(parents=True)
+        (session / "updates.jsonl").write_text(
+            "".join(
+                json.dumps(row) + "\n"
+                for row in [
+                    {"type": "session_metadata", "timestamp": STAMP},
+                    {"role": "user", "content": "fix the bug", "timestamp": STAMP},
+                    {
+                        "type": "turn_completed",
+                        "usage": {"tokens": 10},
+                        "timestamp": STAMP,
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fallback = self.home / ".grok/sessions/workdir/session-two/chat_history.jsonl"
+        fallback.parent.mkdir(parents=True)
+        fallback.write_text(
+            json.dumps(
+                {
+                    "role": "user",
+                    "message": {"role": "user", "content": "second"},
+                    "ts": STAMP,
+                },
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stamp = datetime(2026, 8, 7, 12, 0, tzinfo=WARSAW).timestamp()
+        os.utime(session / "updates.jsonl", (stamp, stamp))
+        os.utime(fallback, (stamp, stamp))
+
+        result = collect_grok(self.context)
+
+        self.assertEqual(result.session_counts()[DAY], 2)
+        self.assertEqual(result.prompts[DAY], 2)
+        self.assertEqual(result.coverage.status, "full")
 
     def test_cursor_gui_uses_header_timestamps_without_reading_message_text(self) -> None:
         path = self.home / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"

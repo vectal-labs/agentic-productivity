@@ -1333,6 +1333,172 @@ def collect_prime(context: CollectorContext) -> HarnessResult:
     )
 
 
+KIMI_INJECTION_ORIGINS = {
+    "injection",
+    "system_trigger",
+    "background_task",
+    "skill_activation",
+}
+
+
+def _kimi_role_and_origin(row: dict[str, Any]) -> tuple[Any, Any]:
+    message = row.get("message") if isinstance(row.get("message"), dict) else {}
+    role = row.get("role") or message.get("role")
+    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    return role, origin.get("kind")
+
+
+def collect_kimi(context: CollectorContext) -> HarnessResult:
+    harness = "Kimi Code"
+    data_home = os.environ.get("KIMI_CODE_HOME")
+    roots = [Path(data_home).expanduser()] if data_home else []
+    roots += [context.home / ".kimi-code", context.home / ".kimi"]
+    installed = _command_installed("kimi") or any(root.exists() for root in roots)
+    result = HarnessResult(harness)
+    if not installed:
+        result.coverage = Coverage(harness, False, "absent")
+        return result
+    files = _recent_files(roots, "wire.jsonl", context.start_timestamp)
+    for path in files:
+        under_agents = path.parent.parent.name == "agents"
+        if under_agents:
+            session_id = path.parent.parent.parent.name
+            identity = f"{session_id}:{path.parent.name}"
+        else:
+            session_id = path.parent.name
+            identity = session_id
+        activity: set[date] = set()
+        prompts: list[tuple[date, str]] = []
+        for row in _json_lines(path):
+            day = _day(row.get("timestamp"))
+            if context.includes(day):
+                activity.add(day)
+            event_type = row.get("type")
+            role, origin_kind = _kimi_role_and_origin(row)
+            is_user_turn = (
+                event_type == "turn.prompt" and origin_kind == "user"
+            ) or (
+                event_type == "context.append_message"
+                and role == "user"
+                and (origin_kind is None or origin_kind == "user")
+            )
+            if not is_user_turn:
+                continue
+            payload = row.get("prompt")
+            if payload is None:
+                payload = row.get("text")
+            if payload is None:
+                payload = row.get("content")
+            if not _content_has_instruction(payload):
+                continue
+            digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "t": str(row.get("timestamp")),
+                        "p": json.dumps(payload, sort_keys=True, default=str),
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            prompts.append((day, digest))
+        for day in activity:
+            result.add_session(day, identity)
+        seen: set[str] = set()
+        for day, digest in prompts:
+            key = f"{identity}:{digest}"
+            if key in seen:
+                continue
+            seen.add(key)
+            if context.includes(day):
+                result.add_prompt(day)
+    detail = f"{len(files)} recent wire logs"
+    if not files and any(root.exists() for root in roots):
+        detail = "native sessions directory exists but no wire logs are recent"
+        result.coverage = Coverage(harness, True, "partial", detail)
+        return result
+    result.coverage = Coverage(harness, True, "full", detail)
+    return result
+
+
+def _grok_root(context: CollectorContext) -> Path:
+    override = os.environ.get("GROK_HOME")
+    if override:
+        return Path(override).expanduser()
+    return context.home / ".grok"
+
+
+def _grok_user_message(row: dict[str, Any]) -> bool:
+    event_type = str(row.get("type") or row.get("updateType") or "")
+    if "usage" in event_type or "completed" in event_type:
+        return False
+    message = row.get("message") if isinstance(row.get("message"), dict) else {}
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    role = row.get("role") or message.get("role") or payload.get("role")
+    content = row.get("content") or message.get("content") or payload.get("content")
+    if isinstance(content, dict):
+        content = content.get("text")
+    return role == "user" and _content_has_instruction(content)
+
+
+def collect_grok(context: CollectorContext) -> HarnessResult:
+    harness = "Grok Build"
+    root = _grok_root(context)
+    sessions_root = root / "sessions"
+    community_database = root / "grok.db"
+    installed = _command_installed("grok") or root.exists()
+    result = HarnessResult(harness)
+    if not installed:
+        result.coverage = Coverage(harness, False, "absent")
+        return result
+    if not sessions_root.exists():
+        if community_database.exists():
+            result.coverage = Coverage(
+                harness,
+                True,
+                "unavailable",
+                "community grok-cli database detected; official CLI stores no sessions here",
+            )
+        else:
+            result.coverage = Coverage(
+                harness, True, "unavailable", "native sessions directory is missing"
+            )
+        return result
+    files = _recent_files([sessions_root], "updates.jsonl", context.start_timestamp) + _recent_files(
+        [sessions_root], "chat_history.jsonl", context.start_timestamp
+    )
+    for path in files:
+        session_id = path.parent.name
+        activity: set[date] = set()
+        prompts: list[tuple[date, str]] = []
+        for row in _json_lines(path):
+            day = _day(row.get("timestamp") or row.get("ts"))
+            if context.includes(day):
+                activity.add(day)
+            if not _grok_user_message(row):
+                continue
+            digest = hashlib.sha256(
+                json.dumps(row, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            prompts.append((day, digest))
+        for day in activity:
+            result.add_session(day, session_id)
+        seen: set[str] = set()
+        for day, digest in prompts:
+            key = f"{session_id}:{digest}"
+            if key in seen:
+                continue
+            seen.add(key)
+            if context.includes(day):
+                result.add_prompt(day)
+    detail = f"{len(files)} recent native session logs"
+    if not files:
+        detail = "sessions directory exists but no recent native session logs"
+        result.coverage = Coverage(harness, True, "partial", detail)
+        return result
+    result.coverage = Coverage(harness, True, "full", detail)
+    return result
+
+
 def collect_omp(context: CollectorContext) -> HarnessResult:
     return _collect_pi_family(
         context,
@@ -1463,13 +1629,15 @@ COLLECTORS: tuple[Callable[[CollectorContext], HarnessResult], ...] = (
     collect_antigravity,
     collect_hermes,
     collect_pi,
-    collect_prime,
     collect_omp,
+    collect_prime,
     collect_opencode,
     collect_droid,
     collect_gemini,
     collect_qwen,
     collect_amp,
+    collect_kimi,
+    collect_grok,
 )
 
 

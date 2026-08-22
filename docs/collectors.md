@@ -16,8 +16,10 @@ Collectors read native local stores whenever possible. Paths are relative to the
 | Antigravity | `~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb` | Session timestamps only; prompt history is unavailable |
 | Hermes | `~/.hermes/state.db` | Sessions and instruction-role messages |
 | Pi Agent | `~/.pi/agent/sessions` | Sessions and instruction-role messages |
-| Prime Agent | `~/.prime/agent/sessions` | Sessions and instruction-role messages |
 | Oh My Pi | `~/.omp/agent/sessions` | Sessions, instruction-role messages, and `session_init` tasks. Child transcripts are separate sessions |
+| Prime Agent | `~/.prime/agent/sessions` | Sessions and instruction-role messages |
+| Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` (`KIMI_CODE_HOME` override), legacy `~/.kimi` | Sessions including sub-agents, plus user-turn prompts. Injection and system-origin rows are excluded |
+| Grok Build | `~/.grok/sessions/**/updates.jsonl` with `chat_history.jsonl` as fallback (`GROK_HOME` override) | Sessions and user-turn messages. The community `grok-cli` SQLite database is never read |
 | OpenCode | `~/.local/share/opencode/opencode.db`, with `storage/message` as a legacy fallback | Sessions and instruction-role messages |
 | Factory Droid | `~/.factory/sessions` | Sessions and instructions, excluding duplicated context rows |
 | Gemini CLI | `~/.gemini/tmp/**/session-*.json` | Sessions and instruction-role messages |

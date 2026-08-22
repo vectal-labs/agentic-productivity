@@ -151,13 +151,15 @@ def _doctor(home: Path, database: Database) -> dict[str, Any]:
         "cursor-agent",
         "hermes",
         "pi",
-        "prime-agent",
         "omp",
+        "prime-agent",
         "opencode",
         "droid",
         "gemini",
         "qwen",
         "amp",
+        "kimi",
+        "grok",
     )
     state = _state_dir(home)
     code_root = Path(os.environ.get("CORRAL_PRODUCTIVITY_CODE_ROOT", home / "code"))
