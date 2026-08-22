@@ -1,20 +1,16 @@
 # Agentic Productivity
 
-Agentic Productivity measures whether AI agents are making David more productive over time.
+I wanted to see whether spending time on different tools, setups and internal software is actually improving my productivity. So I built this tool that measures the number of agent sessions, user prompts and git commits I make over time. That way I have real data telling me whether I'm getting more productive or just wasting time building bullshit internal tooling that's not driving results.
 
-Every morning it sends three 90-day charts to a private Discord channel:
+![Example report: three 90-day charts](docs/example-graph.png)
+
+Every morning it sends those charts to a private Discord channel:
 
 - unique local Git commits
 - active agent sessions, split by harness
 - instruction-bearing prompts, split by harness
 
-The session and prompt charts use stacked bars, so each bar shows both the daily total and each harness's contribution. Every chart includes a gray dashed least-squares trendline.
-
-## Privacy
-
-Raw prompts, responses, paths, repository names, identities, and session IDs never leave the Mac. The local SQLite database stores aggregate counts and operational state only. QuickChart receives dates, counts, and harness labels to render PNGs. Discord receives those aggregate charts and daily totals.
-
-The Discord webhook is stored in macOS Keychain. It is never written to Git, SQLite, logs, environment files, or the LaunchAgent plist.
+90-day window, trendline on every chart.
 
 ## Requirements
 
@@ -23,56 +19,46 @@ The Discord webhook is stored in macOS Keychain. It is never written to Git, SQL
 - Git
 - internet access to QuickChart and Discord during report delivery
 
-The application has no third-party Python dependencies.
+No third-party Python dependencies.
 
-## First-time setup
+## Setup
 
-Copy this folder to the target Mac, then initialize and commit it:
+1. Clone this repo and install the app + LaunchAgent:
 
-```sh
-cd ~/code/agentic-productivity
-git init -b main
-./scripts/test.sh
-git add .
-git commit -m "Initial agentic productivity system"
-```
+   ```sh
+   ./scripts/install.sh
+   ```
 
-Install the application and LaunchAgent:
+2. Store your Discord webhook in the Keychain:
 
-```sh
-./scripts/install.sh
-```
+   ```sh
+   read -r -s DISCORD_WEBHOOK
+   printf '%s\n' "$DISCORD_WEBHOOK" | ./bin/agentic-productivity configure-webhook
+   unset DISCORD_WEBHOOK
+   ```
 
-Store the Discord webhook securely:
+3. Verify the install without sending anything:
 
-```sh
-read -r -s DISCORD_WEBHOOK
-printf '%s\n' "$DISCORD_WEBHOOK" | ./bin/agentic-productivity configure-webhook
-unset DISCORD_WEBHOOK
-```
+   ```sh
+   ./bin/agentic-productivity doctor
+   ./bin/agentic-productivity mock
+   ./bin/agentic-productivity status
+   ```
 
-Verify the installation without sending anything:
-
-```sh
-./bin/agentic-productivity doctor
-./bin/agentic-productivity mock
-./bin/agentic-productivity status
-```
-
-The installed LaunchAgent observes Cursor CLI every five minutes and sends yesterday's report at 08:00 Europe/Warsaw time. If the Mac is asleep, it catches up after wake.
+The LaunchAgent checks for agent sessions every five minutes and sends yesterday's report at 08:00 Europe/Warsaw. It catches up after wake.
 
 ## Commands
 
 ```sh
-./bin/agentic-productivity doctor
-./bin/agentic-productivity collect
-./bin/agentic-productivity mock
-./bin/agentic-productivity status
-./scripts/install.sh
-./scripts/uninstall.sh
+./bin/agentic-productivity doctor     # check health
+./bin/agentic-productivity collect    # collect metrics
+./bin/agentic-productivity mock       # render the report without sending
+./bin/agentic-productivity status     # show collector state
+./scripts/install.sh                  # install app + LaunchAgent
+./scripts/uninstall.sh                # remove both
 ```
 
-Use `collect --days N` to backfill any local window from 1 to 366 days. The scheduled Discord report uses 90 days.
+Use `collect --days N` to backfill any window from 1 to 366 days. The scheduled Discord report uses 90 days.
 
 ## Documentation
 
