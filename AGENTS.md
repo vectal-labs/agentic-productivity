@@ -11,7 +11,6 @@
 - Metric contracts: `docs/metrics.md`
 - Collector locations and coverage: `docs/collectors.md`
 - Runtime and launchd behavior: `docs/launchd.md`
-- Current machine paths: `docs/local-paths.md`
 
 ## Hard constraints
 
