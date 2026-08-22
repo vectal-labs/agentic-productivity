@@ -83,8 +83,9 @@ def load_agent(plist: Path) -> None:
     uid = os.getuid()
     target = f"gui/{uid}/{LABEL}"
     subprocess.run(["launchctl", "bootout", target], capture_output=True, check=False)
+    # RunAtLoad starts the job at bootstrap. A kickstart -k here would kill that
+    # fresh instance and block for the plist's full 60s ThrottleInterval.
     subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=True)
-    subprocess.run(["launchctl", "kickstart", "-k", target], check=True)
 
 
 def confirm_skip_webhook(ask) -> bool:
