@@ -4,7 +4,7 @@ Collectors read native local stores whenever possible. Paths are relative to the
 
 | Harness | Native source | Current contract |
 |---|---|---|
-| Git | Auto-detected top-level roots under the home folder, then shared reflogs | Full when repositories and local Git identities are readable |
+| Git | Auto-detected top-level roots under the home folder, then shared reflogs | Full when repositories are readable and at least one Git identity is configured on the machine |
 | Codex | `~/.codex/sessions`, `~/.codex/archived_sessions` | Sessions and instruction-role messages |
 | Claude Code | `~/.claude/projects` | Parent and subagent sessions, excluding tool results |
 | Cursor GUI | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | Composer sessions and user message headers |
@@ -35,3 +35,4 @@ Collectors read native local stores whenever possible. Paths are relative to the
 - Empty session files with no real turn (title slot or header only) are not counted.
 - Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp.
 - Git roots are stored only in the local aggregate database. Reports contain repository and root counts, never paths or repository names.
+- Commits are attributed by matching against every Git identity configured on the machine. A repository with recent commits that match no known identity is flagged in coverage detail; identities themselves stay local.

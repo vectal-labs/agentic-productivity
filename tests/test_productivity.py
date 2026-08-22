@@ -114,19 +114,32 @@ class ProductivityTests(unittest.TestCase):
         timestamp = datetime(2026, 8, 8, 0, 0, tzinfo=TEST_ZONE).timestamp()
         os.utime(path, (timestamp, timestamp))
 
-    def create_git_commit(self, repo: Path, filename: str) -> None:
+    def create_git_commit(
+        self,
+        repo: Path,
+        filename: str,
+        *,
+        email: str | None = "local@example.test",
+        author_email: str | None = None,
+    ) -> None:
         repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Local"], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "config", "user.email", "local@example.test"],
-            check=True,
-        )
+        if email is not None:
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Local"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", email],
+                check=True,
+            )
         (repo / filename).write_text("one\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(repo), "add", filename], check=True)
         environment = os.environ.copy()
         environment["GIT_AUTHOR_DATE"] = "2026-08-07T12:00:00+02:00"
         environment["GIT_COMMITTER_DATE"] = "2026-08-07T12:00:00+02:00"
+        if author_email is not None:
+            environment["GIT_AUTHOR_NAME"] = "Local"
+            environment["GIT_COMMITTER_NAME"] = "Local"
+            environment["GIT_AUTHOR_EMAIL"] = author_email
+            environment["GIT_COMMITTER_EMAIL"] = author_email
         subprocess.run(
             ["git", "-C", str(repo), "commit", "-q", "-m", "local"],
             check=True,
@@ -1015,6 +1028,58 @@ esac
         self.assertTrue(doctor["ok"])
         self.assertEqual(set(doctor["code_roots"]), {str(root) for root in roots})
         self.assertEqual(doctor["code_roots_source"], "detected")
+
+    def test_commits_match_identities_configured_in_any_repository(self) -> None:
+        self.create_git_commit(self.code / "old", "old.txt")
+        # The active repo is configured with a new email but its commit was
+        # made with the old email that only lives in the other repo's config.
+        self.create_git_commit(
+            self.code / "active",
+            "active.txt",
+            email="new@example.test",
+            author_email="local@example.test",
+        )
+
+        result = collect_commits(self.context)
+
+        self.assertEqual(result.counts[DAY], 2)
+        self.assertEqual(result.coverage.status, "full")
+
+    def test_commits_without_any_configured_identity_report_error(self) -> None:
+        self.create_git_commit(
+            self.code / "orphan",
+            "one.txt",
+            email=None,
+            author_email="ghost@example.test",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.home),
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+            },
+            clear=False,
+        ):
+            result = collect_commits(self.context)
+
+        self.assertEqual(result.counts, {})
+        self.assertEqual(result.coverage.status, "error")
+
+    def test_repositories_with_unmatched_recent_commits_report_partial(self) -> None:
+        self.create_git_commit(self.code / "mine", "mine.txt")
+        self.create_git_commit(
+            self.code / "shared",
+            "shared.txt",
+            author_email="collaborator@example.test",
+        )
+
+        result = collect_commits(self.context)
+
+        self.assertEqual(result.counts[DAY], 1)
+        self.assertEqual(result.coverage.status, "partial")
+        self.assertIn("matching no known identity", result.coverage.detail)
 
     def test_git_root_override_skips_detection(self) -> None:
         override = self.home / "explicit"
