@@ -132,9 +132,7 @@ class ProductivityTests(unittest.TestCase):
             )
         (repo / filename).write_text("one\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(repo), "add", filename], check=True)
-        environment = os.environ.copy()
-        environment["GIT_AUTHOR_DATE"] = "2026-08-07T12:00:00+02:00"
-        environment["GIT_COMMITTER_DATE"] = "2026-08-07T12:00:00+02:00"
+        environment = self.git_date_environment()
         if author_email is not None:
             environment["GIT_AUTHOR_NAME"] = "Local"
             environment["GIT_COMMITTER_NAME"] = "Local"
@@ -145,6 +143,29 @@ class ProductivityTests(unittest.TestCase):
             check=True,
             env=environment,
         )
+
+    def git_date_environment(self) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment["GIT_AUTHOR_DATE"] = "2026-08-07T12:00:00+02:00"
+        environment["GIT_COMMITTER_DATE"] = "2026-08-07T12:00:00+02:00"
+        return environment
+
+    def commit_in_repo(self, repo: Path, filename: str) -> None:
+        (repo / filename).write_text("more\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", filename], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", filename],
+            check=True,
+            env=self.git_date_environment(),
+        )
+
+    def current_branch(self, repo: Path) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
 
     def test_collector_uses_the_selected_local_calendar_day(self) -> None:
         path = self.home / ".codex/sessions/2026/08/07/session.jsonl"
@@ -1056,6 +1077,43 @@ esac
         result = collect_commits(self.context)
 
         self.assertEqual(result.counts, {})
+        self.assertEqual(result.coverage.status, "full")
+
+    def test_fast_forwarded_remote_commits_do_not_count(self) -> None:
+        source = self.home / "outside-roots"
+        self.create_git_commit(source, "base.txt")
+        local = self.code / "local"
+        subprocess.run(["git", "clone", "-q", str(source), str(local)], check=True)
+        # Upstream advances after the clone, as if on another machine.
+        self.commit_in_repo(source, "advance.txt")
+        branch = self.current_branch(source)
+        subprocess.run(["git", "-C", str(local), "fetch", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(local), "merge", "-q", f"origin/{branch}"], check=True
+        )
+
+        result = collect_commits(self.context)
+
+        self.assertEqual(result.counts, {})
+        self.assertEqual(result.coverage.status, "full")
+
+    def test_local_merge_commits_count(self) -> None:
+        repo = self.code / "merging"
+        self.create_git_commit(repo, "base.txt")
+        branch = self.current_branch(repo)
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "feature"], check=True)
+        self.commit_in_repo(repo, "feature.txt")
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", branch], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "merge", "-q", "--no-ff", "--no-edit", "feature"],
+            check=True,
+            env=self.git_date_environment(),
+        )
+
+        result = collect_commits(self.context)
+
+        # Base commit, feature commit, and the locally created merge commit.
+        self.assertEqual(result.counts[DAY], 3)
         self.assertEqual(result.coverage.status, "full")
 
     def test_git_root_override_skips_detection(self) -> None:

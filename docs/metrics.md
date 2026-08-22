@@ -8,6 +8,7 @@
 - Deduplicate primary checkouts and linked worktrees by their shared Git common directory.
 - Read creation events from all reflogs within the requested date range.
 - Include every commit whose creation (commit, merge, cherry-pick, or rebase) is recorded in a local reflog. Reflogs only record actions performed on this machine, so no email or identity matching is needed and identity changes never affect history.
+- Do not count fast-forward merges: they move a ref onto a commit created elsewhere. Only merges that create a merge commit locally count.
 - Count each commit hash once, even if several worktrees or refs contain it.
 - Do not count pushes, fetched upstream commits, or branch movements by themselves.
 

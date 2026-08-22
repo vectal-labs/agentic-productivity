@@ -1616,8 +1616,10 @@ def collect_commits(context: CollectorContext) -> CommitResult:
     # machine, so identity matching is unnecessary and pulled commits never
     # appear. See docs/metrics.md.
     unique: dict[str, date] = {}
+    # A fast-forward merge subject ("merge x: Fast-forward") moves a ref onto a
+    # commit made elsewhere; only "Merge made by" subjects create a commit here.
     creation = re.compile(
-        r"^(commit(?: \([^)]*\))?:|merge |cherry-pick:|rebase \((?:pick|reword|edit|squash|fixup|finish)\):)"
+        r"^(commit(?: \([^)]*\))?:|merge .+: Merge made by |cherry-pick:|rebase \((?:pick|reword|edit|squash|fixup|finish)\):)"
     )
     start_dt = datetime.combine(context.start, time.min, context.timezone).isoformat()
     end_dt = datetime.combine(
