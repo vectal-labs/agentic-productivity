@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import getpass
+import itertools
 import os
 import shutil
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Iterator
 
 from .cli import _collect, _database, _home
 from .collectors import WARSAW
@@ -163,6 +167,33 @@ def _step(number: int, title: str) -> None:
     print(f"\n{_paint('1', f'{number}. {title}')}")
 
 
+@contextmanager
+def _working(message: str) -> Iterator[None]:
+    """Show what a slow step is doing: animated dots on a TTY, one plain line otherwise."""
+    if not sys.stdout.isatty():
+        print(f"  {message}...")
+        yield
+        return
+    stop = threading.Event()
+
+    def animate() -> None:
+        for dots in itertools.cycle((".  ", ".. ", "...")):
+            sys.stdout.write(f"\r  {message}{dots}")
+            sys.stdout.flush()
+            if stop.wait(0.4):
+                return
+
+    thread = threading.Thread(target=animate, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+        sys.stdout.write("\r" + " " * (len(message) + 6) + "\r")
+        sys.stdout.flush()
+
+
 def is_interactive() -> bool:
     return bool(sys.stdin.isatty() and sys.stdout.isatty())
 
@@ -186,13 +217,14 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
         _ok(f"Python {'.'.join(str(part) for part in sys.version_info[:3])}")
         _ok(f"Timezone {zone}")
         _step(2, "Application")
-    install_files(paths, python)
-    if load:
-        load_agent(paths["plist"])
-    if interactive:
+        with _working("Copying app files"):
+            install_files(paths, python)
         _ok(f"Installed {paths['app']}")
         _ok(f"Preserved {paths['state'] / 'metrics.sqlite3'}")
         _step(3, "LaunchAgent")
+        if load:
+            with _working("Loading the launchd job"):
+                load_agent(paths["plist"])
         _ok(f"{'Loaded' if load else 'Wrote'} {paths['plist']}")
         _ok(schedule_line())
         _step(4, "Discord webhook")
@@ -202,11 +234,16 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
         if configured:
             _step(5, "Test report")
             try:
-                send_test_report()
+                with _working("Collecting metrics and sending the report to Discord"):
+                    send_test_report()
                 _ok("Sent a test report to Discord")
             except RuntimeError as error:
                 print(f"  Test report failed: {error}. The daily report will retry at 08:00.")
         print(f"\n{_paint('1', 'Done.')}")
+    else:
+        install_files(paths, python)
+        if load:
+            load_agent(paths["plist"])
     print(f"Installed: {paths['app']}")
     print(f"LaunchAgent: {paths['plist']}")
     print(f"State: {paths['state'] / 'metrics.sqlite3'}")
