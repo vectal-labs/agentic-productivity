@@ -1,10 +1,29 @@
 # Agentic Productivity agent instructions
 
-## Purpose
+## How to answer
 
-- Measure whether agentic work increases User's output over long time horizons.
-- Keep the system local, simple, auditable, and independent from any agent runtime.
-- Send one private Discord report each morning with exactly three 90-day charts.
+- Write in short sentences.
+- Use clear, plain English.
+- Ask in plain text. Do not use a multiple-choice questions UI.
+
+## Other people
+
+- Other agents and humans work in this repo.
+- Never undo, revert, or overwrite their changes.
+- Stay on your task.
+
+## ADRs
+
+- Do not create a new ADR unless the User asks for one.
+- Existing decisions live in `docs/adr/`.
+
+## Git
+
+- Do not push to GitHub unless the User asks you to.
+
+## Subagents
+
+- Do not launch subagents unless the User asks you to.
 
 ## Source of truth
 
@@ -21,12 +40,6 @@
 - Keep days on the user's local Mac calendar (supersedes Europe/Warsaw; see ADR 0003).
 - Keep delivery idempotent: one report per report day unless explicitly forced.
 - Keep the webhook in macOS Keychain under `com.corral.agentic-productivity.discord-webhook`.
-
-## Metric contracts
-
-1. Commits are unique locally created commit hashes in repositories under `~/code`, counted once across linked worktrees.
-2. Sessions include every agent session: GUI, CLI, headless, resumed, parent, subagent, delegated, and automated.
-3. Prompts include every stored instruction-bearing user, system, or developer input. Exclude responses, tool results, and duplicate storage copies.
 
 ## Working rules
 
