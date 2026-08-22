@@ -8,7 +8,8 @@ This project started as David's private measurement system and is being opened u
 
 - Treat the project as a quick-and-dirty internal prototype. Keep it simple and rough around the edges; do not over-engineer.
 - Discord is the only external delivery platform. No Slack, email, Telegram, or other targets.
-- Save the three charts and a summary locally when no Discord webhook is configured or Discord delivery fails.
+- Save the summary and chart data locally when no Discord webhook is configured or Discord delivery fails. Do not render fallback PNGs.
+- Store each local report in a dated folder under the application state directory. Keep reports until the user deletes them.
 
 ## Consequences
 

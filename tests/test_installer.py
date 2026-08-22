@@ -74,7 +74,8 @@ class InstallerTests(unittest.TestCase):
         send.assert_not_called()
         text = out.getvalue()
         self.assertIn("Would install app:", text)
-        self.assertIn("report at 08:00 Pacific/Auckland", text)
+        self.assertNotIn("08:00", text)
+        self.assertNotIn("every 5 minutes", text)
         self.assertNotIn("Cursor", text)
         self.assertFalse(self.app.exists())
 

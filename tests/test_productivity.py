@@ -1135,7 +1135,7 @@ esac
         )
 
         self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
-        self.assertIn("report at 08:00", dry_run.stdout)
+        self.assertNotIn("Schedule:", dry_run.stdout)
         self.assertEqual(mocked.returncode, 0, mocked.stderr)
         body = json.loads(mocked.stdout)
         self.assertEqual(body["status"], "mock-delivered")
