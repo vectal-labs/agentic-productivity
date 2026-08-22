@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTIVITY_ROOT = REPO_ROOT
 sys.path.insert(0, str(PRODUCTIVITY_ROOT))
 
+from agentic_productivity import cli  # noqa: E402
 from agentic_productivity.collectors import (  # noqa: E402
     CollectorContext,
     _collect_pi_family,
@@ -1101,6 +1102,128 @@ esac
         self.assertEqual(payload["height"], CHART_HEIGHT)
         self.assertEqual(payload["devicePixelRatio"], 1)
         self.assertEqual(payload["backgroundColor"], "#0F172A")
+
+    def test_missing_webhook_saves_private_local_report_without_rendering(self) -> None:
+        now = datetime(2026, 8, 8, 8, 0, tzinfo=TEST_ZONE)
+        state = self.database.path.parent
+        with (
+            mock.patch.object(cli, "load_webhook", return_value=None),
+            mock.patch.object(cli, "render_chart") as render_chart,
+            mock.patch.object(
+                cli,
+                "_collect",
+                return_value={"start": DAY.isoformat(), "end": DAY.isoformat()},
+            ),
+        ):
+            code, result = cli._execute_report(
+                self.database,
+                self.home,
+                report_day=DAY,
+                now=now,
+                days=1,
+                force=True,
+                dry_run=False,
+                mock=False,
+            )
+
+        report_dir = state / "reports" / DAY.isoformat()
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "saved-local")
+        render_chart.assert_not_called()
+        self.assertEqual(
+            {path.name for path in report_dir.iterdir()},
+            {"summary.md", "charts.json"},
+        )
+        chart_data = json.loads((report_dir / "charts.json").read_text(encoding="utf-8"))
+        self.assertEqual(chart_data["report_day"], DAY.isoformat())
+        self.assertEqual(len(chart_data["charts"]), 3)
+        self.assertEqual(report_dir.stat().st_mode & 0o777, 0o700)
+        for path in report_dir.iterdir():
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(any(report_dir.glob("*.png")))
+
+        summary = report_dir / "summary.md"
+        summary.write_text("stale\n", encoding="utf-8")
+        with (
+            mock.patch.object(cli, "load_webhook", return_value=None),
+            mock.patch.object(
+                cli,
+                "_collect",
+                return_value={"start": DAY.isoformat(), "end": DAY.isoformat()},
+            ),
+        ):
+            code, result = cli._execute_report(
+                self.database,
+                self.home,
+                report_day=DAY,
+                now=now,
+                days=1,
+                force=True,
+                dry_run=False,
+                mock=False,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "saved-local")
+        self.assertNotEqual(summary.read_text(encoding="utf-8"), "stale\n")
+
+        with (
+            mock.patch.object(cli, "load_webhook", return_value=None),
+            mock.patch.object(cli, "_collect") as collect,
+        ):
+            code, result = cli._execute_report(
+                self.database,
+                self.home,
+                report_day=DAY,
+                now=now,
+                days=1,
+                force=False,
+                dry_run=False,
+                mock=False,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "already-saved-local")
+        collect.assert_not_called()
+
+    def test_delivery_failure_saves_local_report_and_remains_retryable(self) -> None:
+        now = datetime(2026, 8, 8, 8, 0, tzinfo=TEST_ZONE)
+        with (
+            mock.patch.object(cli, "load_webhook", return_value="https://example.test"),
+            mock.patch.object(
+                cli,
+                "_collect",
+                return_value={"start": DAY.isoformat(), "end": DAY.isoformat()},
+            ),
+            mock.patch.object(cli, "render_chart", return_value=MOCK_PNG),
+            mock.patch.object(
+                cli, "post_discord", side_effect=RuntimeError("Discord is unreachable")
+            ),
+        ):
+            code, result = cli._execute_report(
+                self.database,
+                self.home,
+                report_day=DAY,
+                now=now,
+                days=1,
+                force=False,
+                dry_run=False,
+                mock=False,
+            )
+
+        report_dir = self.database.path.parent / "reports" / DAY.isoformat()
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "delivery-failed-local-saved")
+        self.assertTrue((report_dir / "summary.md").is_file())
+        self.assertTrue((report_dir / "charts.json").is_file())
+        self.assertFalse(any(report_dir.glob("*.png")))
+        with self.database.connect() as connection:
+            delivery = connection.execute(
+                "SELECT status FROM deliveries WHERE report_day=?",
+                (DAY.isoformat(),),
+            ).fetchone()
+        self.assertEqual(delivery["status"], "failed")
+        self.assertTrue(self.database.begin_delivery(DAY, now))
 
     def test_installer_dry_run_and_mock_cli_need_no_secret_or_network(self) -> None:
         environment = os.environ.copy()

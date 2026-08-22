@@ -47,6 +47,7 @@
 - Read the relevant docs and source files in full before changing behavior.
 - Prefer native, read-only agent registries over process inspection or guessed timestamps.
 - Add a behavior-focused test for every collector or metric change.
+- Add new tests only when they truly earn their place; do not flood the repo with unit tests or duplicate coverage (see ADR 0006).
 - Preserve the existing aggregate database during installs and uninstalls.
 - Keep the LaunchAgent template free of secrets.
 - If GitHub auth fails inside a restricted agent shell, verify it through the normal Keychain-backed environment before declaring authentication blocked.

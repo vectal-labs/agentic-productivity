@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import getpass
 import json
+import os
 import secrets
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -51,6 +53,71 @@ class Report:
     content: str
     charts: tuple[Chart, Chart, Chart]
     totals: dict[str, int]
+
+
+LOCAL_REPORT_FILES = ("summary.md", "charts.json")
+
+
+def local_report_directory(state_dir: Path, report_day: date) -> Path:
+    return state_dir / "reports" / report_day.isoformat()
+
+
+def local_report_exists(state_dir: Path, report_day: date) -> bool:
+    directory = local_report_directory(state_dir, report_day)
+    return (
+        directory.is_dir()
+        and not directory.is_symlink()
+        and all((directory / name).is_file() for name in LOCAL_REPORT_FILES)
+    )
+
+
+def _private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise OSError(f"local report path is not a private directory: {path}")
+    path.chmod(0o700)
+
+
+def _atomic_private_text(path: Path, content: str) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}."
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def save_local_report(report: Report, state_dir: Path) -> dict[str, Any]:
+    reports_dir = state_dir / "reports"
+    report_dir = local_report_directory(state_dir, report.day)
+    for directory in (state_dir, reports_dir, report_dir):
+        _private_directory(directory)
+
+    chart_data = {
+        "report_day": report.day.isoformat(),
+        "totals": report.totals,
+        "charts": [
+            {"name": Path(chart.filename).stem, "config": chart.config}
+            for chart in report.charts
+        ],
+    }
+    _atomic_private_text(report_dir / "summary.md", report.content + "\n")
+    _atomic_private_text(
+        report_dir / "charts.json",
+        json.dumps(chart_data, indent=2, sort_keys=True) + "\n",
+    )
+    return {
+        "directory": str(report_dir),
+        "files": list(LOCAL_REPORT_FILES),
+    }
 
 
 def _date_spine(start: date, end: date) -> list[date]:

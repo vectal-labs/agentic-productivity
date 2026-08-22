@@ -25,7 +25,7 @@ from .reporting import (
 LABEL = "com.corral.agentic-productivity"
 SKIP_WARNING = (
     "The daily Discord report is the point of this tool. "
-    "Without a webhook, reports are only locally rendered PNG files."
+    "Without a webhook, the summary and chart data are saved locally."
 )
 WEBHOOK_HELP = """\
 Create a webhook in Discord:
@@ -206,7 +206,11 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
         _step(4, "Discord webhook")
         configure_webhook()
         configured = load_webhook() is not None
-        _ok("Webhook stored in macOS Keychain" if configured else "Webhook skipped; reports stay local")
+        _ok(
+            "Webhook stored in macOS Keychain"
+            if configured
+            else "Webhook skipped; summaries and chart data stay local"
+        )
         if configured:
             _step(5, "Test report")
             try:

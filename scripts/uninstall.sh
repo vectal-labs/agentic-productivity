@@ -15,13 +15,7 @@ if [ -f "$PLIST" ]; then
   rm -- "$PLIST"
 fi
 if [ -d "$APP_ROOT" ]; then
-  for file in __init__.py cli.py collectors.py database.py installer.py model.py reporting.py; do
-    if [ -f "$APP_ROOT/agentic_productivity/$file" ]; then
-      rm -- "$APP_ROOT/agentic_productivity/$file"
-    fi
-  done
-  rmdir "$APP_ROOT/agentic_productivity" 2>/dev/null || true
-  rmdir "$APP_ROOT" 2>/dev/null || true
+  rm -rf -- "$APP_ROOT"
 fi
 
 printf '%s\n' 'Uninstalled the Agentic Productivity app and LaunchAgent.'

@@ -11,9 +11,15 @@
 
 The interval trigger exists because Cursor CLI does not retain historical per-turn timestamps. Every invocation observes its current native prompt totals. Before 08:00, the command stops after that local observation.
 
-At or after 08:00, the job collects yesterday's metrics, builds the previous 90 days, and sends the report if yesterday has not already been delivered. The five-minute interval and `RunAtLoad` provide wake catch-up when the Mac missed 08:00.
+At or after 08:00, the job collects yesterday's metrics and builds the previous 90 days. With a webhook, it sends the report if yesterday has not already been delivered. Without a webhook, it saves the summary and Chart.js data locally without contacting QuickChart. The five-minute interval and `RunAtLoad` provide wake catch-up when the Mac missed 08:00.
 
 SQLite delivery state makes normal runs idempotent. `--force` is the explicit override.
+
+## Local fallback
+
+Local reports live under `~/Library/Application Support/Corral/Agentic Productivity/reports/YYYY-MM-DD/` as `summary.md` and `charts.json`. Repeated runs safely replace that day's files. Reports are kept until the user deletes them.
+
+The same fallback is saved when chart rendering or Discord delivery fails. Failed Discord deliveries remain retryable. Fallback reports never contain PNG files.
 
 ## Installation
 

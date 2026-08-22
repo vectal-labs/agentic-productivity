@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from io import StringIO
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -94,7 +95,7 @@ class InstallerTests(unittest.TestCase):
             with mock.patch("sys.stdout", StringIO()) as out:
                 self.assertFalse(installer.confirm_skip_webhook(lambda _prompt, value=answer: value))
             self.assertIn("point of this tool", out.getvalue())
-            self.assertIn("locally rendered PNG", out.getvalue())
+            self.assertIn("summary and chart data", out.getvalue())
         for answer in ("y", "yes", "Y", "YES"):
             with mock.patch("sys.stdout", StringIO()):
                 self.assertTrue(installer.confirm_skip_webhook(lambda _prompt, value=answer: value))
@@ -110,6 +111,43 @@ class InstallerTests(unittest.TestCase):
         self.assertIn(installer.SKIP_WARNING, out.getvalue())
         with self.assertRaises(StopIteration):
             next(asks)
+
+    def test_uninstall_removes_app_cache_and_keeps_metrics(self) -> None:
+        package = self.app / "agentic_productivity"
+        cache = package / "__pycache__"
+        cache.mkdir(parents=True)
+        (package / "cli.py").write_text("x = 1\n", encoding="utf-8")
+        (package / "local_timezone.py").write_text("x = 1\n", encoding="utf-8")
+        (cache / "cli.cpython-314.pyc").write_bytes(b"pyc")
+        self.agents.mkdir(parents=True)
+        plist = self.agents / "com.corral.agentic-productivity.plist"
+        plist.write_text("{}\n", encoding="utf-8")
+        self.state.mkdir(parents=True)
+        metrics = self.state / "metrics.sqlite3"
+        metrics.write_bytes(b"sqlite")
+
+        bin_dir = Path(self.temporary.name) / "fake-bin"
+        bin_dir.mkdir()
+        launchctl = bin_dir / "launchctl"
+        launchctl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launchctl.chmod(0o755)
+
+        environment = os.environ.copy()
+        environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
+        completed = subprocess.run(
+            [str(Path(__file__).resolve().parents[1] / "scripts/uninstall.sh")],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertFalse(self.app.exists())
+        self.assertFalse(plist.exists())
+        self.assertTrue(metrics.is_file())
+        self.assertEqual(metrics.read_bytes(), b"sqlite")
 
 
 if __name__ == "__main__":

@@ -16,10 +16,12 @@ from .local_timezone import local_timezone
 from .reporting import (
     DEFAULT_REPORT_DAYS,
     build_report,
+    local_report_exists,
     load_webhook,
     mock_delivery,
     post_discord,
     render_chart,
+    save_local_report,
     store_webhook,
 )
 
@@ -121,6 +123,20 @@ def _execute_report(
     if database.is_sent(report_day) and not force and not mock and not dry_run:
         return 0, {"status": "already-sent", "report_day": report_day.isoformat()}
 
+    state_dir = database.path.parent
+    webhook = None if dry_run or mock else load_webhook()
+    if (
+        webhook is None
+        and not force
+        and not dry_run
+        and not mock
+        and local_report_exists(state_dir, report_day)
+    ):
+        return 0, {
+            "status": "already-saved-local",
+            "report_day": report_day.isoformat(),
+        }
+
     collection = _collect(database, home, end=report_day, days=days, now=now)
     report = build_report(database, report_day, days)
     base = {
@@ -133,9 +149,16 @@ def _execute_report(
     if mock:
         return 0, {"status": "mock-delivered", **base, **mock_delivery(report)}
 
-    webhook = load_webhook()
     if webhook is None:
-        return 0, {"status": "webhook-not-configured", **base}
+        try:
+            local_report = save_local_report(report, state_dir)
+        except OSError as error:
+            return 1, {
+                "status": "local-save-failed",
+                "error": str(error)[:300] or "local report save failed",
+                **base,
+            }
+        return 0, {"status": "saved-local", "local_report": local_report, **base}
     if not database.begin_delivery(report_day, now, force=force):
         return 0, {"status": "already-sending-or-sent", **base}
     try:
@@ -146,7 +169,21 @@ def _execute_report(
         database.finish_delivery(
             report_day, datetime.now(now.tzinfo), sent=False, error=message
         )
-        return 1, {"status": "delivery-failed", "error": message, **base}
+        try:
+            local_report = save_local_report(report, state_dir)
+        except OSError as local_error:
+            return 1, {
+                "status": "delivery-and-local-save-failed",
+                "error": message,
+                "local_error": str(local_error)[:300] or "local report save failed",
+                **base,
+            }
+        return 1, {
+            "status": "delivery-failed-local-saved",
+            "error": message,
+            "local_report": local_report,
+            **base,
+        }
     database.finish_delivery(report_day, datetime.now(now.tzinfo), sent=True)
     return 0, {"status": "sent", **base}
 
@@ -285,16 +322,6 @@ def main(argv: list[str] | None = None) -> int:
                     as_json,
                 )
             return 0
-        if load_webhook() is None:
-            if not quiet:
-                _emit(
-                    {
-                        "status": "webhook-not-configured",
-                        "cursor_observation": observation,
-                    },
-                    as_json,
-                )
-            return 0
     code, result = _execute_report(
         database,
         home,
@@ -307,7 +334,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     if observation is not None:
         result["cursor_observation"] = observation
-    if not quiet or result.get("status") not in {"already-sent", "already-sending-or-sent"}:
+    quiet_statuses = {
+        "already-saved-local",
+        "already-sending-or-sent",
+        "already-sent",
+    }
+    if not quiet or result.get("status") not in quiet_statuses:
         _emit(result, as_json)
     return code
 

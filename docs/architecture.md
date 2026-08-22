@@ -6,8 +6,8 @@
 2. The collector converts events into daily aggregate counts in the Mac's local timezone.
 3. SQLite stores only daily counts, collector health, hashed Cursor source keys, baselines, and delivery state.
 4. The reporter builds three 90-day Chart.js configurations.
-5. QuickChart renders the aggregate configurations into PNG files.
-6. Discord receives the daily totals and three PNG attachments.
+5. With Discord configured, QuickChart renders the aggregate configurations into PNG files and Discord receives the daily totals and attachments.
+6. Without Discord, or after a delivery failure, the summary and Chart.js data are saved locally without fallback PNGs.
 
 ## Components
 
@@ -24,6 +24,8 @@
 
 The source repository is not the runtime. Installation copies the Python package into `~/Library/Application Support/Corral/Agentic Productivity/app`. Runtime aggregates live beside it in `metrics.sqlite3` and survive reinstalls and uninstalls.
 
+Local fallback reports live in dated folders under `reports/`. They are private, safely overwritten for the same report day, and kept until the user deletes them.
+
 The webhook is separate from both locations. It lives in macOS Keychain under the service name `com.corral.agentic-productivity.discord-webhook`.
 
 ## Failure behavior
@@ -31,4 +33,4 @@ The webhook is separate from both locations. It lives in macOS Keychain under th
 - Collector failures become explicit health states.
 - Daily counts use monotonic upserts, so a later incomplete collection cannot erase a higher count.
 - Delivery claims are stored before network calls to avoid accidental duplicate reports.
-- Failed deliveries record a short error and can be retried.
+- Failed deliveries record a short error, save a local fallback, and can be retried.
