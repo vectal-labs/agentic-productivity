@@ -2,6 +2,7 @@
 
 ## How to answer
 
+- Always make your responses clear & very concise.
 - Write in short sentences.
 - Use clear, plain English.
 - Ask in plain text. Do not use a multiple-choice questions UI.

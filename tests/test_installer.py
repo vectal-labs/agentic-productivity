@@ -74,6 +74,7 @@ class InstallerTests(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("Would install app:", text)
         self.assertIn("report at 08:00 Pacific/Auckland", text)
+        self.assertNotIn("Cursor", text)
         self.assertFalse(self.app.exists())
 
     def test_webhook_skip_requires_explicit_yes(self) -> None:

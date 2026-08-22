@@ -46,7 +46,7 @@ def local_timezone_name() -> str:
 
 def schedule_line() -> str:
     return (
-        "Cursor observation every 5 minutes; "
+        "Checks agent sessions every 5 minutes; "
         f"90-day report at 08:00 {local_timezone_name()} with wake catch-up"
     )
 
@@ -206,7 +206,7 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
         print(f"Would preserve state: {paths['state'] / 'metrics.sqlite3'}")
         print(f"Would install LaunchAgent: {paths['plist']}")
         print(
-            "Would observe Cursor every 5 minutes and send a 90-day "
+            "Would check agent sessions every 5 minutes and send a 90-day "
             f"report at 08:00 {zone} with wake catch-up"
         )
         return 0
