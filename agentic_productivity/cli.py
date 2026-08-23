@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,10 @@ from .reporting import (
 )
 
 
+INSTALL_PREFLIGHT_REQUEST = ".install-preflight-request.json"
+INSTALL_PREFLIGHT_RESULT = ".install-preflight-result.json"
+
+
 def _home() -> Path:
     return Path(os.environ.get("CORRAL_PRODUCTIVITY_HOME", Path.home())).expanduser()
 
@@ -44,6 +49,32 @@ def _state_dir(home: Path) -> Path:
 
 def _database(home: Path) -> Database:
     return Database(_state_dir(home) / "metrics.sqlite3")
+
+
+def install_preflight_paths(state_dir: Path) -> tuple[Path, Path]:
+    return (
+        state_dir / INSTALL_PREFLIGHT_REQUEST,
+        state_dir / INSTALL_PREFLIGHT_RESULT,
+    )
+
+
+def _write_private_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}."
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+        path.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _code_root_override() -> Path | None:
@@ -142,6 +173,52 @@ def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[s
         "sessions": result.session_counts().get(now.date(), 0),
         "prompts": result.prompts.get(now.date(), 0),
     }
+
+
+def _run_install_preflight(
+    database: Database,
+    home: Path,
+    now: datetime,
+    days: int,
+) -> dict[str, Any] | None:
+    request_path, result_path = install_preflight_paths(database.path.parent)
+    if not request_path.is_file():
+        return None
+    try:
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        request = {}
+    request_path.unlink(missing_ok=True)
+    token = str(request.get("token") or "")
+    webhook_expected = request.get("webhook_configured") is True
+    try:
+        report_day = now.date() - timedelta(days=1)
+        collection = _collect(
+            database,
+            home,
+            end=report_day,
+            days=days,
+            now=now,
+        )
+        webhook_accessible = (
+            not webhook_expected or load_webhook(timeout=60) is not None
+        )
+        result: dict[str, Any] = {
+            "token": token,
+            "status": "ready" if webhook_accessible else "failed",
+            "coverage": collection["coverage"],
+            "webhook_accessible": webhook_accessible,
+        }
+        if not webhook_accessible:
+            result["error"] = "webhook-unavailable"
+    except Exception as error:
+        result = {
+            "token": token,
+            "status": "failed",
+            "error": type(error).__name__,
+        }
+    _write_private_json(result_path, result)
+    return result
 
 
 def _execute_report(
@@ -344,6 +421,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     is_mock = arguments.command == "mock"
     quiet = bool(getattr(arguments, "quiet", False))
+    if arguments.command == "run":
+        preflight = _run_install_preflight(database, home, now, arguments.days)
+        if preflight is not None:
+            if not quiet:
+                _emit(preflight, as_json)
+            return 0 if preflight.get("status") == "ready" else 1
     observation = None
     if arguments.command == "run":
         observation = _observe_cursor_cli(database, home, now)

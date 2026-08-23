@@ -12,7 +12,7 @@ Clone this repo and run the installer:
 ./install.sh
 ```
 
-The installer walks you through everything: app, LaunchAgent, and your Discord webhook (stored in macOS Keychain). It ends by sending a test report so you see the charts right away.
+The installer walks you through everything: app, Discord webhook, and the LaunchAgent's macOS access prompts. It waits for the background access check, then sends a test report so you see the charts right away.
 
 Every morning at 08:00 you get three 90-day charts in Discord: Git commits, agent sessions, and prompts — the last two split by harness. Only daily counts leave your Mac (to quickchart.io for rendering); prompts, paths, and identities never do.
 

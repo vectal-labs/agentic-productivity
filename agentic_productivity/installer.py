@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import itertools
+import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
-from .cli import _code_root_override, _collect, _database, _home
+from .cli import (
+    _code_root_override,
+    _collect,
+    _database,
+    _home,
+    install_preflight_paths,
+)
 from .collectors import CodeRootDetection, detect_code_roots
 from .local_timezone import local_timezone, local_timezone_name
 from .reporting import (
@@ -32,6 +41,7 @@ WEBHOOK_HELP = """\
 Create a webhook in Discord:
   Server settings → Integrations → Webhooks → New Webhook
   Copy the webhook URL."""
+PREFLIGHT_TIMEOUT_SECONDS = 600
 
 
 def _paths() -> dict[str, Path]:
@@ -77,15 +87,86 @@ def install_files(paths: dict[str, Path], python: str) -> None:
         temp.unlink(missing_ok=True)
 
 
-def load_agent(plist: Path) -> None:
+def load_agent(
+    plist: Path,
+    *,
+    preflight_state: Path | None = None,
+    webhook_configured: bool = False,
+) -> str | None:
     if not shutil.which("launchctl"):
-        return
+        return None
     uid = os.getuid()
     target = f"gui/{uid}/{LABEL}"
     subprocess.run(["launchctl", "bootout", target], capture_output=True, check=False)
+    token = (
+        request_install_preflight(
+            preflight_state, webhook_configured=webhook_configured
+        )
+        if preflight_state is not None
+        else None
+    )
     # RunAtLoad starts the job at bootstrap. A kickstart -k here would kill that
     # fresh instance and block for the plist's full 60s ThrottleInterval.
     subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=True)
+    return token
+
+
+def request_install_preflight(state_dir: Path, *, webhook_configured: bool) -> str:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.chmod(0o700)
+    request_path, result_path = install_preflight_paths(state_dir)
+    request_path.unlink(missing_ok=True)
+    result_path.unlink(missing_ok=True)
+    token = secrets.token_hex(16)
+    request_path.write_text(
+        json.dumps(
+            {
+                "token": token,
+                "webhook_configured": webhook_configured,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    request_path.chmod(0o600)
+    return token
+
+
+def cancel_install_preflight(state_dir: Path) -> None:
+    request_path, result_path = install_preflight_paths(state_dir)
+    request_path.unlink(missing_ok=True)
+    result_path.unlink(missing_ok=True)
+
+
+def wait_for_install_preflight(
+    state_dir: Path,
+    token: str,
+    *,
+    timeout: float = PREFLIGHT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    request_path, result_path = install_preflight_paths(state_dir)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            time.sleep(0.1)
+            continue
+        if not isinstance(result, dict) or result.get("token") != token:
+            time.sleep(0.1)
+            continue
+        request_path.unlink(missing_ok=True)
+        result_path.unlink(missing_ok=True)
+        if result.get("status") != "ready":
+            if result.get("error") == "webhook-unavailable":
+                raise RuntimeError(
+                    "the background job could not read the Discord webhook from Keychain"
+                )
+            raise RuntimeError("the background job could not complete its access check")
+        return result
+    cancel_install_preflight(state_dir)
+    raise RuntimeError("timed out waiting for the background access check")
 
 
 def confirm_skip_webhook(ask) -> bool:
@@ -235,12 +316,7 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
             install_files(paths, python)
         _ok(f"Installed {paths['app']}")
         _ok(f"Preserved {paths['state'] / 'metrics.sqlite3'}")
-        _step(4, "LaunchAgent")
-        if load:
-            with _working("Loading the launchd job"):
-                load_agent(paths["plist"])
-        _ok(f"{'Loaded' if load else 'Wrote'} {paths['plist']}")
-        _step(5, "Discord webhook")
+        _step(4, "Discord webhook")
         configure_webhook()
         configured = load_webhook() is not None
         _ok(
@@ -248,6 +324,35 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
             if configured
             else "Webhook skipped; summaries and chart data stay local"
         )
+        _step(5, "Background access")
+        if load:
+            print("  Approve any macOS access prompts that appear.")
+            try:
+                with _working("Starting the LaunchAgent and checking its access"):
+                    token = load_agent(
+                        paths["plist"],
+                        preflight_state=paths["state"],
+                        webhook_configured=configured,
+                    )
+                    if token is None:
+                        raise RuntimeError("launchctl is unavailable")
+                    preflight = wait_for_install_preflight(paths["state"], token)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                cancel_install_preflight(paths["state"])
+                print(f"  Background access check failed: {error}.")
+                return 1
+            _ok("LaunchAgent access checked")
+            coverage = preflight.get("coverage")
+            if isinstance(coverage, dict):
+                errors = sorted(
+                    str(harness)
+                    for harness, status in coverage.items()
+                    if status == "error"
+                )
+                if errors:
+                    print(f"  Collector errors: {', '.join(errors)}")
+        else:
+            _ok(f"Wrote {paths['plist']}")
         if configured:
             _step(6, "Test report")
             try:

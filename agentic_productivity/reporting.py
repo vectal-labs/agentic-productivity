@@ -465,7 +465,7 @@ def store_webhook(webhook: str) -> None:
         raise RuntimeError("could not store the webhook in macOS Keychain")
 
 
-def load_webhook() -> str | None:
+def load_webhook(*, timeout: int = 10) -> str | None:
     security = Path("/usr/bin/security")
     if not security.exists():
         return None
@@ -483,7 +483,7 @@ def load_webhook() -> str | None:
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
-        timeout=10,
+        timeout=timeout,
     )
     if completed.returncode != 0:
         return None

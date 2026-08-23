@@ -29,9 +29,12 @@ The same fallback is saved when chart rendering or Discord delivery fails. Faile
 2. Scans the home folder for Git repositories during interactive installation and stores their top-level roots.
 3. Copies the package into the private Application Support directory.
 4. Renders the plist template with absolute paths.
-5. Sets private permissions.
+5. Sets private file permissions and configures the Discord webhook.
 6. Replaces and starts the user LaunchAgent.
-7. Preserves the existing SQLite database.
+7. Makes that LaunchAgent run every collector immediately and waits for it to finish, so macOS access prompts happen during installation.
+8. Preserves the existing SQLite database.
+
+The install-time access check only collects local aggregates. It does not send the scheduled report or mark it delivered. Normal `RunAtLoad` behavior still stops before 08:00 after the Cursor CLI observation.
 
 The webhook is not placed in the plist. The runtime reads it from macOS Keychain only when a report is ready.
 

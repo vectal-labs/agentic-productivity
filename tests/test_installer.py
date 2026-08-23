@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from io import StringIO
 from pathlib import Path
@@ -8,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from agentic_productivity import installer
+from agentic_productivity import cli, installer
 from agentic_productivity.local_timezone import local_timezone
 
 
@@ -105,6 +106,96 @@ class InstallerTests(unittest.TestCase):
         detect.assert_called_once_with(home)
         database.replace_code_roots.assert_called_once()
         self.assertIn("Found 23 repos in ~/Projects, ~/dev", out.getvalue())
+
+    def test_interactive_install_waits_for_launchagent_access_check(self) -> None:
+        home = Path(self.temporary.name) / "home"
+        database = mock.Mock()
+        events: list[str] = []
+
+        def configure() -> None:
+            events.append("webhook")
+
+        def load_agent(
+            _plist: Path,
+            *,
+            preflight_state: Path,
+            webhook_configured: bool,
+        ) -> str:
+            events.append("launchagent")
+            token = installer.request_install_preflight(
+                preflight_state, webhook_configured=webhook_configured
+            )
+            request_path, result_path = cli.install_preflight_paths(preflight_state)
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            result_path.write_text(
+                json.dumps(
+                    {
+                        "token": request["token"],
+                        "status": "ready",
+                        "coverage": {"Git": "full"},
+                        "webhook_accessible": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return token
+
+        with (
+            mock.patch.object(installer, "_home", return_value=home),
+            mock.patch.object(installer, "_database", return_value=database),
+            mock.patch.object(
+                installer,
+                "detect_code_roots",
+                return_value=installer.CodeRootDetection((), 0),
+            ),
+            mock.patch.object(installer, "install_files"),
+            mock.patch.object(installer, "configure_webhook", side_effect=configure),
+            mock.patch.object(installer, "load_webhook", return_value="configured"),
+            mock.patch.object(installer, "load_agent", side_effect=load_agent),
+            mock.patch.object(installer, "send_test_report") as send,
+            mock.patch("sys.stdout", StringIO()) as out,
+        ):
+            code = installer.run(dry_run=False, load=True, interactive=True)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(events, ["webhook", "launchagent"])
+        send.assert_called_once_with()
+        request_path, result_path = cli.install_preflight_paths(self.state)
+        self.assertFalse(request_path.exists())
+        self.assertFalse(result_path.exists())
+        self.assertIn("Approve any macOS access prompts", out.getvalue())
+        self.assertIn("LaunchAgent access checked", out.getvalue())
+
+    def test_launchagent_consumes_install_preflight_before_normal_run(self) -> None:
+        home = Path(self.temporary.name) / "home"
+        database = mock.Mock()
+        database.path = self.state / "metrics.sqlite3"
+        token = installer.request_install_preflight(
+            self.state, webhook_configured=True
+        )
+        with (
+            mock.patch.object(
+                cli,
+                "_collect",
+                return_value={"coverage": {"Git": "full", "Codex": "full"}},
+            ) as collect,
+            mock.patch.object(cli, "load_webhook", return_value="configured") as webhook,
+        ):
+            result = cli._run_install_preflight(
+                database,
+                home,
+                cli.datetime.now(local_timezone()),
+                90,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "ready")
+        collect.assert_called_once()
+        webhook.assert_called_once_with(timeout=60)
+        completed = installer.wait_for_install_preflight(
+            self.state, token, timeout=0.1
+        )
+        self.assertEqual(completed["coverage"], {"Git": "full", "Codex": "full"})
 
     def test_local_timezone_uses_the_os_zone_name(self) -> None:
         with (
