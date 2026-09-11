@@ -306,7 +306,7 @@ def build_report(
         shares["MacBook"].append(round(100 * local / known, 2) if known else None)
         shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
     measured_days = sum(value is not None for value in shares["Cloud"])
-    placement_options = _base_options(f"BB open threads — last {days} days")
+    placement_options = _base_options(f"Cloud vs Local usage -- last {days} days")
     placement_options["scales"]["y"].update({
         "min": 0, "max": 100,
         "title": {"display": True, "text": "Open threads (%)", "color": "#94A3B8", "font": {"size": 20}},
