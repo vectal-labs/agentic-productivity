@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from .database import Database
+from .fingerprints import FingerprintSigner
 from .model import Collection, CommitResult, Coverage, HarnessResult
 
 
@@ -30,6 +31,9 @@ class CollectorContext:
     database: Database
     now: datetime
     timezone: tzinfo
+    signer: FingerprintSigner | None = None
+    machine: str = "mac"
+    skip_commits: bool = False
 
     @property
     def start_timestamp(self) -> float:
@@ -129,6 +133,8 @@ class _PromptCopies:
 
     def __init__(self) -> None:
         self._seen: set[tuple[str, str]] = set()
+        self.last_id = ""
+        self.last_stamp = ""
 
     def take(self, entry_id: Any, timestamp: Any, fallback: Any = None) -> bool:
         ident = "" if entry_id is None else str(entry_id).strip()
@@ -139,6 +145,8 @@ class _PromptCopies:
                     fallback, sort_keys=True, separators=(",", ":"), default=str
                 ).encode()
             ).hexdigest()
+        self.last_id = ident
+        self.last_stamp = stamp
         if not ident and not stamp:
             return True
         key = (ident, stamp)
@@ -148,11 +156,46 @@ class _PromptCopies:
         return True
 
 
+def _result(harness: str, context: CollectorContext) -> HarnessResult:
+    return HarnessResult(harness, signer=context.signer)
+
+
+def _record_prompt(
+    result: HarnessResult,
+    copies: _PromptCopies,
+    day: date,
+    entry_id: Any,
+    timestamp: Any,
+    fallback: Any = None,
+    *,
+    session_id: str = "",
+    role: str = "",
+    content: Any = None,
+) -> None:
+    if not copies.take(entry_id, timestamp, fallback):
+        return
+    result.add_prompt(
+        day,
+        entry_id=copies.last_id,
+        timestamp=timestamp if timestamp is not None else copies.last_stamp,
+        session_id=session_id,
+        role=role,
+        content=content,
+    )
+
+
+def _support_paths(home: Path, app: str, *parts: str) -> list[Path]:
+    return [
+        home.joinpath("Library/Application Support", app, *parts),
+        home.joinpath(".config", app, *parts),
+    ]
+
+
 def collect_codex(context: CollectorContext) -> HarnessResult:
     harness = "Codex"
     roots = [context.home / ".codex/sessions", context.home / ".codex/archived_sessions"]
     installed = _command_installed("codex") or any(root.exists() for root in roots)
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -161,7 +204,6 @@ def collect_codex(context: CollectorContext) -> HarnessResult:
     for path in files:
         session_id = path.stem
         activity: set[date] = set()
-        prompts: list[date] = []
         real_turn = False
         for row in _json_lines(path):
             payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -178,18 +220,23 @@ def collect_codex(context: CollectorContext) -> HarnessResult:
                 real_turn = True
             if context.includes(day):
                 activity.add(day)
-                if is_instruction and copies.take(
-                    payload.get("id"),
-                    row.get("timestamp") or payload.get("timestamp"),
-                    row,
-                ):
-                    prompts.append(day)
+                if is_instruction:
+                    stamp = row.get("timestamp") or payload.get("timestamp")
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        payload.get("id"),
+                        stamp,
+                        row,
+                        session_id=session_id,
+                        role=str(payload.get("role") or ""),
+                        content=payload.get("content"),
+                    )
         if not real_turn:
             continue
         for day in activity:
             result.add_session(day, session_id)
-        for day in prompts:
-            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -198,7 +245,7 @@ def collect_claude(context: CollectorContext) -> HarnessResult:
     harness = "Claude Code"
     root = context.home / ".claude/projects"
     installed = _command_installed("claude") or root.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -208,7 +255,6 @@ def collect_claude(context: CollectorContext) -> HarnessResult:
         session_id = path.stem
         agent_id = ""
         activity: set[date] = set()
-        prompts: list[date] = []
         real_turn = False
         for row in _json_lines(path):
             session_id = str(row.get("sessionId") or session_id)
@@ -224,17 +270,23 @@ def collect_claude(context: CollectorContext) -> HarnessResult:
                 real_turn = True
             if context.includes(day):
                 activity.add(day)
-                if is_instruction and copies.take(
-                    row.get("uuid") or row.get("id"), row.get("timestamp"), row
-                ):
-                    prompts.append(day)
+                if is_instruction:
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        row.get("uuid") or row.get("id"),
+                        row.get("timestamp"),
+                        row,
+                        session_id=session_id,
+                        role="user",
+                        content=message.get("content"),
+                    )
         if not real_turn:
             continue
         identity = f"{session_id}:{agent_id}" if "/subagents/" in str(path) else session_id
         for day in activity:
             result.add_session(day, identity)
-        for day in prompts:
-            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -243,7 +295,7 @@ def _collect_pi_family(
     context: CollectorContext, *, harness: str, root: Path, command: str
 ) -> HarnessResult:
     installed = _command_installed(command) or root.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -252,7 +304,6 @@ def _collect_pi_family(
     for path in files:
         session_id = path.stem
         activity: set[date] = set()
-        prompts: list[date] = []
         real_turn = False
         for row in _json_lines(path):
             row_type = row.get("type")
@@ -275,16 +326,22 @@ def _collect_pi_family(
                 real_turn = True
             if context.includes(day):
                 activity.add(day)
-                if (is_init or is_instruction) and copies.take(
-                    row.get("id"), row.get("timestamp"), row
-                ):
-                    prompts.append(day)
+                if is_init or is_instruction:
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        row.get("id"),
+                        row.get("timestamp"),
+                        row,
+                        session_id=session_id,
+                        role=str(message.get("role") or ("system" if is_init else "")),
+                        content=row.get("task") if is_init else message.get("content"),
+                    )
         if not real_turn:
             continue
         for day in activity:
             result.add_session(day, session_id)
-        for day in prompts:
-            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -293,7 +350,7 @@ def collect_droid(context: CollectorContext) -> HarnessResult:
     harness = "Factory Droid"
     root = context.home / ".factory/sessions"
     installed = _command_installed("droid") or root.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -302,7 +359,6 @@ def collect_droid(context: CollectorContext) -> HarnessResult:
     for path in files:
         session_id = path.stem
         activity: set[date] = set()
-        prompts: list[date] = []
         real_turn = False
         for row in _json_lines(path):
             if row.get("type") == "session_start":
@@ -320,16 +376,22 @@ def collect_droid(context: CollectorContext) -> HarnessResult:
                 real_turn = True
             if context.includes(day):
                 activity.add(day)
-                if is_instruction and copies.take(
-                    row.get("id"), row.get("timestamp"), row
-                ):
-                    prompts.append(day)
+                if is_instruction:
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        row.get("id"),
+                        row.get("timestamp"),
+                        row,
+                        session_id=session_id,
+                        role=str(message.get("role") or ""),
+                        content=message.get("content"),
+                    )
         if not real_turn:
             continue
         for day in activity:
             result.add_session(day, session_id)
-        for day in prompts:
-            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -338,7 +400,7 @@ def _collect_gemini_family(
     context: CollectorContext, *, harness: str, root: Path, command: str
 ) -> HarnessResult:
     installed = _command_installed(command) or root.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -353,7 +415,6 @@ def _collect_gemini_family(
             continue
         session_id = str(data.get("sessionId") or path.stem)
         activity: set[date] = set()
-        prompts: list[date] = []
         real_turn = False
         for message in data.get("messages", []):
             if not isinstance(message, dict):
@@ -366,16 +427,22 @@ def _collect_gemini_family(
                 real_turn = True
             if context.includes(day):
                 activity.add(day)
-                if is_instruction and copies.take(
-                    message.get("id"), message.get("timestamp"), message
-                ):
-                    prompts.append(day)
+                if is_instruction:
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        message.get("id"),
+                        message.get("timestamp"),
+                        message,
+                        session_id=session_id,
+                        role=str(message.get("type") or ""),
+                        content=message.get("content"),
+                    )
         if not real_turn:
             continue
         for day in activity:
             result.add_session(day, session_id)
-        for day in prompts:
-            result.add_prompt(day)
     result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
     return result
 
@@ -421,10 +488,18 @@ def _collect_opencode_legacy_json(
             continue
         session_id = str(message.get("sessionID") or path.parent.name)
         result.add_session(day, session_id)
-        if message.get("role") in INSTRUCTION_ROLES and copies.take(
-            message.get("id") or path.stem, stamp, message
-        ):
-            result.add_prompt(day)
+        if message.get("role") in INSTRUCTION_ROLES:
+            _record_prompt(
+                result,
+                copies,
+                day,
+                message.get("id") or path.stem,
+                stamp,
+                message,
+                session_id=session_id,
+                role=str(message.get("role") or ""),
+                content=message.get("content"),
+            )
     result.coverage = Coverage(result.harness, True, "full", f"{len(files)} recent message records")
     return result
 
@@ -464,8 +539,16 @@ def _collect_opencode_sqlite(
                 if role in INSTRUCTION_ROLES:
                     live_sessions.add(identity)
                     result.add_session(day, identity)
-                    if copies.take(message_id, created_at, (identity, created_at, role)):
-                        result.add_prompt(day)
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        message_id,
+                        created_at,
+                        (identity, created_at, role),
+                        session_id=identity,
+                        role=str(role or ""),
+                    )
                 elif identity in live_sessions:
                     result.add_session(day, identity)
             for session_id, created_at, updated_at in connection.execute(
@@ -497,7 +580,7 @@ def collect_opencode(context: CollectorContext) -> HarnessResult:
     installed = (
         _command_installed("opencode") or database.exists() or legacy_root.exists()
     )
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -518,7 +601,7 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
     harness = "Hermes"
     path = context.home / ".hermes/state.db"
     installed = _command_installed("hermes") or path.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -539,10 +622,16 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                     continue
                 count += 1
                 result.add_session(day, str(session_id))
-                if role in INSTRUCTION_ROLES and copies.take(
-                    f"{session_id}:{role}", timestamp
-                ):
-                    result.add_prompt(day)
+                if role in INSTRUCTION_ROLES:
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        f"{session_id}:{role}",
+                        timestamp,
+                        session_id=str(session_id),
+                        role=str(role or ""),
+                    )
             for session_id, started_at in connection.execute(
                 """
                 SELECT id, started_at FROM sessions
@@ -556,7 +645,13 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                     f"{session_id}:system_prompt", started_at
                 ):
                     result.add_session(day, str(session_id))
-                    result.add_prompt(day)
+                    result.add_prompt(
+                        day,
+                        entry_id=copies.last_id,
+                        timestamp=started_at,
+                        session_id=str(session_id),
+                        role="system",
+                    )
     except sqlite3.Error:
         result.coverage = Coverage(harness, True, "error", "native state database unreadable")
         return result
@@ -566,9 +661,14 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
 
 def collect_cursor_gui(context: CollectorContext) -> HarnessResult:
     harness = "Cursor GUI"
-    path = context.home / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
-    installed = Path("/Applications/Cursor.app").exists() or path.exists()
-    result = HarnessResult(harness)
+    candidates = _support_paths(
+        context.home, "Cursor", "User/globalStorage/state.vscdb"
+    )
+    path = next((item for item in candidates if item.exists()), candidates[0])
+    installed = Path("/Applications/Cursor.app").exists() or any(
+        item.exists() for item in candidates
+    )
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -593,10 +693,16 @@ def collect_cursor_gui(context: CollectorContext) -> HarnessResult:
                     continue
                 count += 1
                 result.add_session(day, str(composer_id))
-                if message_type == 1 and copies.take(
-                    f"{composer_id}:{created_at}", created_at
-                ):
-                    result.add_prompt(day)
+                if message_type == 1:
+                    _record_prompt(
+                        result,
+                        copies,
+                        day,
+                        f"{composer_id}:{created_at}",
+                        created_at,
+                        session_id=str(composer_id),
+                        role="user",
+                    )
     except sqlite3.Error:
         result.coverage = Coverage(harness, True, "error", "native global database unreadable")
         return result
@@ -630,18 +736,14 @@ def _collect_roo_family(
     extension_id: str,
 ) -> HarnessResult:
     storages = [
-        context.home
-        / "Library/Application Support/Cursor/User/globalStorage"
-        / extension_id,
-        context.home
-        / "Library/Application Support/Code/User/globalStorage"
-        / extension_id,
+        *_support_paths(context.home, "Cursor", "User/globalStorage", extension_id),
+        *_support_paths(context.home, "Code", "User/globalStorage", extension_id),
     ]
     task_roots = [storage / "tasks" for storage in storages if (storage / "tasks").exists()]
     installed = any(storage.exists() for storage in storages) or _editor_extension_installed(
         context.home, extension_id
     )
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -683,8 +785,18 @@ def _collect_roo_family(
                     and _content_has_instruction(content)
                 )
                 or (role == "user" and _roo_initial_task(content))
-            ) and copies.take(message.get("ts"), message.get("ts"), (identity, role, day)):
-                result.add_prompt(day)
+            ):
+                _record_prompt(
+                    result,
+                    copies,
+                    day,
+                    message.get("ts"),
+                    message.get("ts"),
+                    (identity, role, day),
+                    session_id=identity,
+                    role=str(role or ""),
+                    content=content,
+                )
         try:
             ui_messages = json.loads(ui_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -704,9 +816,18 @@ def _collect_roo_family(
                 message.get("type") == "say"
                 and message.get("say") == "user_feedback"
                 and str(message.get("text", "")).strip()
-                and copies.take(message.get("ts"), message.get("ts"), (identity, "feedback", day))
             ):
-                result.add_prompt(day)
+                _record_prompt(
+                    result,
+                    copies,
+                    day,
+                    message.get("ts"),
+                    message.get("ts"),
+                    (identity, "feedback", day),
+                    session_id=identity,
+                    role="user",
+                    content=message.get("text"),
+                )
     detail = f"{len(task_directories)} recent native task histories"
     if unreadable:
         detail += f"; {unreadable} message files unreadable"
@@ -781,12 +902,12 @@ def _nested_protobuf_timestamps(data: bytes, depth: int = 0) -> list[datetime]:
 def collect_antigravity(context: CollectorContext) -> HarnessResult:
     harness = "Antigravity"
     application = Path("/Applications/Antigravity.app")
-    database = (
-        context.home
-        / "Library/Application Support/Antigravity/User/globalStorage/state.vscdb"
+    candidates = _support_paths(
+        context.home, "Antigravity", "User/globalStorage/state.vscdb"
     )
-    result = HarnessResult(harness)
-    if not application.exists() and not database.exists():
+    database = next((item for item in candidates if item.exists()), candidates[0])
+    result = _result(harness, context)
+    if not application.exists() and not any(item.exists() for item in candidates):
         result.coverage = Coverage(harness, False, "absent")
         return result
     if not database.exists():
@@ -862,10 +983,16 @@ def _vscode_request_has_instruction(request: dict[str, Any]) -> bool:
 def collect_github_copilot(context: CollectorContext) -> HarnessResult:
     harness = "GitHub Copilot"
     extension = _editor_extension_installed(context.home, "github.copilot-chat")
-    user_root = context.home / "Library/Application Support/Code/User"
+    user_candidates = [
+        context.home / "Library/Application Support/Code/User",
+        context.home / ".config/Code/User",
+    ]
+    user_root = next((item for item in user_candidates if item.exists()), user_candidates[0])
     native_storage = user_root / "globalStorage/github.copilot-chat"
-    result = HarnessResult(harness)
-    if not extension and not native_storage.exists():
+    result = _result(harness, context)
+    if not extension and not any(
+        (item / "globalStorage/github.copilot-chat").exists() for item in user_candidates
+    ):
         result.coverage = Coverage(harness, False, "absent")
         return result
     roots = list((user_root / "workspaceStorage").glob("*/chatSessions"))
@@ -899,10 +1026,17 @@ def collect_github_copilot(context: CollectorContext) -> HarnessResult:
                 continue
             result.add_session(day, identity)
             request_id = request.get("requestId") or request.get("id") or index
-            if _vscode_request_has_instruction(request) and copies.take(
-                request_id, request.get("timestamp")
-            ):
-                result.add_prompt(day)
+            if _vscode_request_has_instruction(request):
+                _record_prompt(
+                    result,
+                    copies,
+                    day,
+                    request_id,
+                    request.get("timestamp"),
+                    session_id=identity,
+                    role="user",
+                    content=(request.get("message") or ""),
+                )
 
     for path in files:
         if path.suffix == ".json":
@@ -1084,7 +1218,7 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
         context.home / ".cursor/acp-sessions",
     ]
     installed = _command_installed("cursor-agent") or any(root.exists() for root in roots)
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -1131,19 +1265,28 @@ def collect_cursor_cli(context: CollectorContext) -> HarnessResult:
             and context.includes(updated)
         )
         source_prefix = "native-v2:acp" if is_acp else "native-v2"
-        _, first = context.database.observe_source_total(
+        delta, first = context.database.observe_source_total(
             harness,
             f"{source_prefix}:{session_id}",
             total,
             observed,
             attribute_first=attribute_first,
         )
+        if context.signer is not None and delta:
+            start_ordinal = total - delta + 1
+            for ordinal in range(start_ordinal, total + 1):
+                result.add_prompt(
+                    observed.date(),
+                    session_id=session_id,
+                    ordinal=ordinal,
+                )
         if first and total and not attribute_first:
             historical_gaps += 1
-    for day, count in context.database.observed_prompt_counts(
-        harness, context.start, context.end
-    ).items():
-        result.add_prompt(day, count)
+    if context.signer is None:
+        for day, count in context.database.observed_prompt_counts(
+            harness, context.start, context.end
+        ).items():
+            result.add_prompt(day, count)
     readable = len(stores) - unreadable
     detail = f"{readable} recent sessions; exact daily counts after local baseline"
     if acp_sessions:
@@ -1186,7 +1329,7 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
     binary = next((path for path in candidates if path.is_file()), None)
     native_root = context.home / ".local/share/amp"
     installed = binary is not None or native_root.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -1288,8 +1431,17 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
                 continue
             result.add_session(day, identity)
             message_id = message.get("messageId") or message.get("protocolMessageID") or index
-            if is_instruction and copies.take(message_id, metadata.get("sentAt")):
-                result.add_prompt(day)
+            if is_instruction:
+                _record_prompt(
+                    result,
+                    copies,
+                    day,
+                    message_id,
+                    metadata.get("sentAt"),
+                    session_id=identity,
+                    role=str(message.get("role") or ""),
+                    content=message.get("content"),
+                )
         if real_turn:
             for value in (thread.get("created"), thread.get("updatedAt")):
                 day = _day(value, context.timezone)
@@ -1352,7 +1504,7 @@ def collect_kimi(context: CollectorContext) -> HarnessResult:
     roots = [Path(data_home).expanduser()] if data_home else []
     roots += [context.home / ".kimi-code", context.home / ".kimi"]
     installed = _command_installed("kimi") or any(root.exists() for root in roots)
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -1408,7 +1560,12 @@ def collect_kimi(context: CollectorContext) -> HarnessResult:
                 continue
             seen.add(key)
             if context.includes(day):
-                result.add_prompt(day)
+                result.add_prompt(
+                    day,
+                    entry_id=digest,
+                    timestamp=None,
+                    session_id=identity,
+                )
     detail = f"{len(files)} recent wire logs"
     if not files and any(root.exists() for root in roots):
         detail = "native sessions directory exists but no wire logs are recent"
@@ -1444,7 +1601,7 @@ def collect_grok(context: CollectorContext) -> HarnessResult:
     sessions_root = root / "sessions"
     community_database = root / "grok.db"
     installed = _command_installed("grok") or root.exists()
-    result = HarnessResult(harness)
+    result = _result(harness, context)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
@@ -1487,7 +1644,12 @@ def collect_grok(context: CollectorContext) -> HarnessResult:
                 continue
             seen.add(key)
             if context.includes(day):
-                result.add_prompt(day)
+                result.add_prompt(
+                    day,
+                    entry_id=digest,
+                    timestamp=None,
+                    session_id=session_id,
+                )
     detail = f"{len(files)} recent native session logs"
     if not files:
         detail = "sessions directory exists but no recent native session logs"
@@ -1700,14 +1862,37 @@ COLLECTORS: tuple[Callable[[CollectorContext], HarnessResult], ...] = (
 
 
 def collect_all(context: CollectorContext) -> Collection:
-    commits = collect_commits(context)
+    if context.skip_commits:
+        commits = CommitResult(
+            {},
+            Coverage("Git", False, "absent", "commit collection is Mac-only"),
+        )
+    else:
+        commits = collect_commits(context)
     results: list[HarnessResult] = []
     for collector in COLLECTORS:
         try:
-            results.append(collector(context))
+            result = collector(context)
         except Exception:
             name = getattr(collector, "__name__", "unknown").removeprefix("collect_")
-            failed = HarnessResult(name)
-            failed.coverage = Coverage(name, True, "error", "collector failed")
-            results.append(failed)
+            result = _result(name, context)
+            result.coverage = Coverage(name, True, "error", "collector failed")
+        if (
+            result.ambiguous_prompts
+            and result.coverage is not None
+            and result.coverage.status == "full"
+        ):
+            extra = "ambiguous prompts excluded"
+            detail = (
+                f"{result.coverage.detail}; {extra}"
+                if result.coverage.detail
+                else extra
+            )
+            result.coverage = Coverage(
+                result.coverage.harness,
+                result.coverage.installed,
+                "partial",
+                detail,
+            )
+        results.append(result)
     return Collection(context.start, context.end, commits, tuple(results))

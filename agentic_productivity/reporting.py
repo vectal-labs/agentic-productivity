@@ -10,7 +10,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -296,6 +296,42 @@ def build_report(
         f"Commits: **{totals['commits']}** · Sessions: **{totals['sessions']}** · "
         f"Prompts: **{totals['prompts']}**"
     )
+    combined = database.combined_reporting_start()
+    if combined is not None and start < combined:
+        prior = date.fromordinal(combined.toordinal() - 1)
+        content += f"\nHistory through {prior.isoformat()} is Mac-only."
+    notes: list[str] = []
+    for row in database.machine_coverage_rows(report_day, report_day):
+        status = str(row["status"])
+        if status in {"full", "absent"}:
+            continue
+        label = "unsupported" if status == "unavailable" else status
+        machine = str(row["machine"])
+        harness = str(row["harness"])
+        notes.append(f"{machine} {harness} {label}")
+    if combined is not None and report_day >= combined:
+        cloud_rows = [
+            row
+            for row in database.machine_coverage_rows(report_day, report_day)
+            if row["machine"] == "cloud" and row["harness"] != "Git"
+        ]
+        if not cloud_rows:
+            notes.append("cloud missing")
+        else:
+            last_seen = next(
+                (
+                    row["last_seen_at"]
+                    for row in database.machines()
+                    if row["machine"] == "cloud"
+                ),
+                None,
+            )
+            if last_seen:
+                seen = datetime.fromisoformat(str(last_seen))
+                if seen.date() < report_day:
+                    notes.append("cloud stale")
+    if notes:
+        content += "\nCoverage: " + "; ".join(notes[:8]) + "."
     placement = {row["day"]: dict(row) for row in database.bb_placement_series(start, report_day)}
     shares: dict[str, list[float | None]] = {"MacBook": [], "Cloud": []}
     for day in spine:

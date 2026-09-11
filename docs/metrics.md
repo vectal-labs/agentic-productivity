@@ -18,16 +18,18 @@
 - Do not count a session file that has no real turn. A real turn is an instruction-bearing message or a `session_init` entry. Empty drafts do not count.
 - Include GUI, CLI, headless, resumed, parent, subagent, delegated, and automated sessions.
 - Each native child transcript is its own session, including OMP task files and advisor files. Do not fold them into the parent.
-- Deduplicate repeated records using the native session identity within each harness.
-- Keep harnesses separate in storage and charts.
+- Deduplicate with a private HMAC fingerprint of the harness plus native session identity. Genuine child sessions stay separate.
+- After both the Mac and cloud collectors initialize, daily totals are the set union of fingerprints from both machines. Earlier days stay Mac-only.
 
 ## 3. Instruction-bearing prompts
 
 - Count stored inputs with user, system, or developer roles when they contain an instruction.
 - Include human prompts, automation, system setup, parent-agent delegation, and subagent instructions.
 - Exclude assistant responses, tool results, empty messages, and duplicate storage copies.
-- Deduplicate copied prompts within each harness by native entry identity plus timestamp, across files. A fork or export that reprints the same entry counts once. New turns in the child file still count.
-- Never store prompt text in the aggregate database.
+- Fingerprint prompts with the harness, original native message identity, and normalized native timestamp. Copied fork history keeps those original identities and counts once. New child turns still count.
+- Records without message IDs use the original session identity, native timestamp, role, and canonical instruction content inside the HMAC. If that provenance is missing, exclude the event and mark coverage partial.
+- Counter-only stores keep the existing baseline rules. Deduplicate cumulative prompt ordinals within each native session. Never add replicated counters together.
+- Never store prompt text in the aggregate database. Fingerprints never enter Discord or chart-rendering requests.
 
 ## 4. BB thread placement
 

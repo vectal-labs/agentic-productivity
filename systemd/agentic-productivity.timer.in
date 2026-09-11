@@ -1,0 +1,12 @@
+[Unit]
+Description=Agentic productivity collector every five minutes
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=300
+AccuracySec=30
+Persistent=true
+Unit=agentic-productivity.service
+
+[Install]
+WantedBy=timers.target

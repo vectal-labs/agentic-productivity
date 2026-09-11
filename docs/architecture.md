@@ -3,27 +3,31 @@
 ## Data flow
 
 1. Native collectors read local agent registries and Git reflogs. A separate BB scan reads current thread placement.
-2. The collector converts events into daily aggregate counts in the Mac's local timezone.
-3. SQLite stores daily counts, aggregate BB placement snapshots, collector health, hashed Cursor source keys, baselines, and delivery state.
-4. The reporter builds four 90-day Chart.js configurations.
+2. Each machine stores daily aggregate counts and opaque fingerprints in local SQLite, using the Mac timezone.
+3. The Mac pulls cloud snapshots over SSH and unions fingerprints for days after combined reporting starts.
+4. The reporter builds four 90-day Chart.js configurations from those aggregates. Fingerprints are not sent to Discord or QuickChart.
 5. With Discord configured, QuickChart renders the aggregate configurations into PNG files and Discord receives the daily totals and attachments.
 6. Without Discord, or after a delivery failure, the summary and Chart.js data are saved locally without fallback PNGs.
 
 ## Components
 
 - `agentic_productivity/collectors.py`: native registry and Git collectors
+- `agentic_productivity/fingerprints.py`: HMAC session and prompt fingerprints
+- `agentic_productivity/remote.py`: snapshot export and SSH import
 - `agentic_productivity/bb.py`: read-only BB placement scan
 - `agentic_productivity/database.py`: aggregate SQLite schema and idempotent delivery state
 - `agentic_productivity/reporting.py`: chart configuration, trendlines, Keychain access, QuickChart, and Discord delivery
 - `agentic_productivity/cli.py`: manual and scheduled command orchestration
 - `agentic_productivity/local_timezone.py`: operating-system timezone detection
+- `agentic_productivity/linux.py`: Linux runtime and systemd timer install
 - `launchd/`: LaunchAgent template
+- `systemd/`: Linux collector timer template
 - `install.sh`: installs a private application copy and loads launchd
 - `tests/`: behavior and privacy tests
 
 ## Storage
 
-The source repository is not the runtime. Installation copies the Python package into `~/Library/Application Support/Corral/Agentic Productivity/app`. Runtime aggregates live beside it in `metrics.sqlite3` and survive reinstalls and uninstalls.
+The source repository is not the runtime. Installation copies the Python package into `~/Library/Application Support/Corral/Agentic Productivity/app` on the Mac and `~/.local/share/corral/agentic-productivity/app` on Linux. Runtime aggregates live beside those copies in `metrics.sqlite3` and survive reinstalls and uninstalls.
 
 Local fallback reports live in dated folders under `reports/`. They are private, safely overwritten for the same report day, and kept until the user deletes them.
 

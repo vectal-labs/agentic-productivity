@@ -19,7 +19,17 @@ from .collectors import (
     detect_code_roots,
 )
 from .database import Database
-from .local_timezone import local_timezone
+from .fingerprints import FingerprintSigner, load_fingerprint_key
+from .local_timezone import local_timezone, local_timezone_name
+from .model import Coverage
+from .remote import (
+    collection_slot,
+    export_snapshot,
+    load_snapshot,
+    pull_snapshots,
+    snapshot_directory,
+    write_snapshot,
+)
 from .reporting import (
     DEFAULT_REPORT_DAYS,
     build_report,
@@ -45,7 +55,19 @@ def _state_dir(home: Path) -> Path:
     override = os.environ.get("CORRAL_PRODUCTIVITY_STATE_DIR")
     if override:
         return Path(override).expanduser()
-    return home / "Library/Application Support/Corral/Agentic Productivity"
+    if sys.platform == "darwin":
+        return home / "Library/Application Support/Corral/Agentic Productivity"
+    return home / ".local/share/corral/agentic-productivity"
+
+
+def _machine() -> str:
+    return os.environ.get("CORRAL_PRODUCTIVITY_MACHINE") or (
+        "mac" if sys.platform == "darwin" else "cloud"
+    )
+
+
+def _signer(state_dir: Path) -> FingerprintSigner:
+    return FingerprintSigner(load_fingerprint_key(state_dir, create=True))
 
 
 def _database(home: Path) -> Database:
@@ -126,22 +148,34 @@ def _collect(
     days: int,
     now: datetime,
     refresh_code_roots: bool = True,
+    snapshot: bool = False,
 ) -> dict[str, Any]:
     start = end - timedelta(days=days - 1)
     zone = now.tzinfo or local_timezone()
+    machine = _machine()
+    signer = _signer(database.path.parent)
+    database.mark_machine(machine, now)
     context = CollectorContext(
         home=home,
         code_roots=_code_roots(
-            database, home, now, refresh=refresh_code_roots
+            database, home, now, refresh=refresh_code_roots and machine != "cloud"
         ),
         start=start,
         end=end,
         database=database,
         now=now,
         timezone=zone,
+        signer=signer,
+        machine=machine,
+        skip_commits=machine != "mac",
     )
     collection = collect_all(context)
     database.store_collection(collection, now)
+    coverage_items = [collection.commits.coverage]
+    coverage_items.extend(
+        result.coverage for result in collection.harnesses if result.coverage is not None
+    )
+    database.store_machine_coverage(machine, end, coverage_items, now)
     coverage = {
         collection.commits.coverage.harness: collection.commits.coverage.status,
         **{
@@ -149,11 +183,25 @@ def _collect(
             for result in collection.harnesses
         },
     }
-    return {
+    payload = {
         "start": start.isoformat(),
         "end": end.isoformat(),
         "coverage": coverage,
+        "machine": machine,
     }
+    if snapshot:
+        snapshot_payload = export_snapshot(
+            database,
+            machine=machine,
+            slot=collection_slot(now),
+            now=now,
+            start=start,
+            end=end,
+            timezone_name=local_timezone_name(),
+            coverage=coverage_items,
+        )
+        payload["snapshot"] = str(write_snapshot(database.path.parent, snapshot_payload))
+    return payload
 
 
 def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[str, Any]:
@@ -166,6 +214,8 @@ def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[s
         database=database,
         now=now,
         timezone=zone,
+        signer=_signer(database.path.parent),
+        machine=_machine(),
     )
     result = collect_cursor_cli(context)
     database.store_harness_result(result, now.date(), now.date(), now)
@@ -174,6 +224,56 @@ def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[s
         "sessions": result.session_counts().get(now.date(), 0),
         "prompts": result.prompts.get(now.date(), 0),
     }
+
+
+def _import_cloud(database: Database, now: datetime) -> dict[str, Any]:
+    if _machine() != "mac":
+        return {"status": "skipped", "imported": 0}
+    pull = pull_snapshots(database.path.parent)
+    incoming = snapshot_directory(database.path.parent) / "incoming"
+    imported = 0
+    replayed = 0
+    if incoming.is_dir():
+        for path in sorted(incoming.glob("*.json")):
+            try:
+                payload = load_snapshot(path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            result = database.import_snapshot(payload, now)
+            if result["status"] == "imported":
+                imported += 1
+            else:
+                replayed += 1
+    if pull.get("status") != "ok":
+        status = "unavailable" if pull.get("status") == "missing" else "error"
+        database.store_machine_coverage(
+            "cloud",
+            now.date(),
+            [
+                Coverage(
+                    "cloud collector",
+                    True,
+                    status,
+                    str(pull.get("detail") or "cloud snapshots unavailable"),
+                )
+            ],
+            now,
+        )
+    else:
+        database.store_machine_coverage(
+            "cloud",
+            now.date(),
+            [
+                Coverage(
+                    "cloud collector",
+                    True,
+                    "full",
+                    str(pull.get("detail") or "copied snapshots"),
+                )
+            ],
+            now,
+        )
+    return {"status": pull.get("status"), "imported": imported, "replayed": replayed, "detail": pull.get("detail")}
 
 
 def _observe_bb(database: Database, home: Path, now: datetime) -> dict[str, Any]:
@@ -267,12 +367,18 @@ def _execute_report(
         }
 
     collection = _collect(database, home, end=report_day, days=days, now=now)
+    if not mock:
+        cloud_import = _import_cloud(database, now)
+    else:
+        cloud_import = None
     report = build_report(database, report_day, days)
     base = {
         "report_day": report_day.isoformat(),
         "totals": report.totals,
         "collection": collection,
     }
+    if cloud_import is not None:
+        base["cloud_import"] = cloud_import
     if dry_run:
         return 0, {"status": "dry-run", **base}
     if mock:
@@ -355,6 +461,8 @@ def _doctor(home: Path, database: Database, zone) -> dict[str, Any]:
         "state_dir": str(state),
         "state_writable": writable,
         "webhook_configured": load_webhook() is not None,
+        "fingerprint_key": (state / "fingerprint.key").is_file(),
+        "cloud_remote": (state / "remote.json").is_file(),
         "installed_harnesses": [name for name in commands if shutil.which(name)],
         "database": database.status(),
     }
@@ -369,6 +477,8 @@ def parser() -> argparse.ArgumentParser:
     collect.add_argument("--end", type=_parse_day)
     collect.add_argument("--days", type=int, default=DEFAULT_REPORT_DAYS)
     collect.add_argument("--json", action="store_true")
+    collect.add_argument("--quiet", action="store_true")
+    collect.add_argument("--snapshot", action="store_true")
 
     scan = sub.add_parser("scan-bb", help="store one local/cloud BB placement snapshot")
     scan.add_argument("--json", action="store_true")
@@ -435,10 +545,21 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.days < 1 or arguments.days > 366:
             print("collect: --days must be between 1 and 366", file=sys.stderr)
             return 2
-        end = arguments.end or (now.date() - timedelta(days=1))
-        result = _collect(database, home, end=end, days=arguments.days, now=now)
-        result["bb_observation"] = _observe_bb(database, home, now)
-        _emit(result, as_json)
+        end = arguments.end or (
+            now.date() if arguments.snapshot else now.date() - timedelta(days=1)
+        )
+        result = _collect(
+            database,
+            home,
+            end=end,
+            days=arguments.days,
+            now=now,
+            snapshot=arguments.snapshot,
+        )
+        if _machine() == "mac":
+            result["bb_observation"] = _observe_bb(database, home, now)
+        if not arguments.quiet:
+            _emit(result, as_json)
         return 0
 
     report_day = arguments.date or (now.date() - timedelta(days=1))
@@ -455,9 +576,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if preflight.get("status") == "ready" else 1
     observation = None
     bb_observation = None
+    cloud_import = None
     if arguments.command == "run":
         bb_observation = _observe_bb(database, home, now)
         observation = _observe_cursor_cli(database, home, now)
+        cloud_import = _import_cloud(database, now)
+        _collect(
+            database,
+            home,
+            end=now.date(),
+            days=3,
+            now=now,
+            refresh_code_roots=False,
+        )
     if arguments.command == "run" and not arguments.force and not arguments.dry_run:
         if now.hour < 8:
             if not quiet:
@@ -467,6 +598,7 @@ def main(argv: list[str] | None = None) -> int:
                         "timezone": getattr(zone, "key", None) or str(zone),
                         "cursor_observation": observation,
                         "bb_observation": bb_observation,
+                        "cloud_import": cloud_import,
                     },
                     as_json,
                 )
@@ -485,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
         result["cursor_observation"] = observation
     if bb_observation is not None:
         result["bb_observation"] = bb_observation
+    if cloud_import is not None:
+        result["cloud_import"] = cloud_import
     quiet_statuses = {
         "already-saved-local",
         "already-sending-or-sent",

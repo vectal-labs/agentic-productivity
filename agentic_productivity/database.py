@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import sqlite3
 import hashlib
+import json
+import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterator
 
-from .model import Collection, HarnessResult
+from .model import Collection, Coverage, HarnessResult
 from .bb import BbPlacement
+from .fingerprints import is_fingerprint
 
 
 SCHEMA = """
@@ -91,6 +93,41 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL,
     detail TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS fingerprints (
+    day TEXT NOT NULL,
+    metric TEXT NOT NULL CHECK (metric IN ('sessions', 'prompts')),
+    harness TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    PRIMARY KEY (day, metric, harness, fingerprint)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS fingerprints_prompt_identity
+ON fingerprints(metric, harness, fingerprint) WHERE metric = 'prompts';
+
+CREATE TABLE IF NOT EXISTS machines (
+    machine TEXT PRIMARY KEY,
+    initialized_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS machine_coverage (
+    day TEXT NOT NULL,
+    machine TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    collected_at TEXT NOT NULL,
+    PRIMARY KEY (day, machine, harness)
+);
+
+CREATE TABLE IF NOT EXISTS imported_snapshots (
+    machine TEXT NOT NULL,
+    slot INTEGER NOT NULL,
+    payload_hash TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    PRIMARY KEY (machine, slot)
+);
 """
 
 
@@ -114,7 +151,7 @@ class Database:
         try:
             connection.executescript(SCHEMA)
             connection.execute(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '4')"
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '5')"
             )
             connection.commit()
             yield connection
@@ -291,6 +328,8 @@ class Database:
                     """,
                     (item.harness, int(item.installed), item.status, item.detail, stamp),
                 )
+            self._upsert_result_fingerprints(connection, result)
+            self._apply_combined_counts(connection, start, end, stamp)
 
     def store_collection(self, collection: Collection, collected_at: datetime) -> None:
         stamp = collected_at.isoformat()
@@ -345,6 +384,266 @@ class Database:
                     """,
                     (item.harness, int(item.installed), item.status, item.detail, stamp),
                 )
+            self._upsert_fingerprint_rows(connection, collection)
+            self._apply_combined_counts(connection, collection.start, collection.end, stamp)
+
+    def upsert_fingerprints(
+        self,
+        rows: list[tuple[date | str, str, str, str]],
+    ) -> int:
+        inserted = 0
+        with self.connect() as connection:
+            for day, metric, harness, fingerprint in rows:
+                if not is_fingerprint(fingerprint):
+                    continue
+                day_text = day if isinstance(day, str) else day.isoformat()
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO fingerprints(day, metric, harness, fingerprint)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (day_text, metric, harness, fingerprint),
+                )
+                inserted += cursor.rowcount
+        return inserted
+
+    def fingerprints_between(self, start: date, end: date) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT day, metric, harness, fingerprint
+                    FROM fingerprints
+                    WHERE day BETWEEN ? AND ?
+                    ORDER BY day, metric, harness, fingerprint
+                    """,
+                    (start.isoformat(), end.isoformat()),
+                )
+            )
+
+    def mark_machine(self, machine: str, now: datetime) -> None:
+        stamp = now.isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO machines(machine, initialized_at, last_seen_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(machine) DO UPDATE SET last_seen_at=excluded.last_seen_at
+                """,
+                (machine, stamp, stamp),
+            )
+
+    def machines(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    "SELECT machine, initialized_at, last_seen_at FROM machines ORDER BY machine"
+                )
+            )
+
+    def combined_reporting_start(self) -> date | None:
+        with self.connect() as connection:
+            return self._combined_reporting_start(connection)
+
+    def store_machine_coverage(
+        self,
+        machine: str,
+        day: date,
+        coverage: list[Coverage],
+        collected_at: datetime,
+    ) -> None:
+        stamp = collected_at.isoformat()
+        with self.connect() as connection:
+            for item in coverage:
+                connection.execute(
+                    """
+                    INSERT INTO machine_coverage(
+                        day, machine, harness, status, detail, collected_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(day, machine, harness) DO UPDATE SET
+                        status=excluded.status,
+                        detail=excluded.detail,
+                        collected_at=excluded.collected_at
+                    """,
+                    (
+                        day.isoformat(),
+                        machine,
+                        item.harness,
+                        item.status,
+                        item.detail,
+                        stamp,
+                    ),
+                )
+
+    def machine_coverage_rows(self, start: date, end: date) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(
+                connection.execute(
+                    """
+                    SELECT day, machine, harness, status, detail, collected_at
+                    FROM machine_coverage
+                    WHERE day BETWEEN ? AND ?
+                    ORDER BY day, machine, harness
+                    """,
+                    (start.isoformat(), end.isoformat()),
+                )
+            )
+
+    def import_snapshot(self, payload: dict, imported_at: datetime) -> dict[str, int | str]:
+        machine = str(payload["machine"])
+        slot = int(payload["slot"])
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT payload_hash FROM imported_snapshots WHERE machine=? AND slot=?",
+                (machine, slot),
+            ).fetchone()
+            if existing is not None:
+                return {"status": "replayed", "inserted": 0, "slot": slot}
+            rows = [
+                (day, metric, harness, fingerprint)
+                for day, metric, harness, fingerprint in payload.get("fingerprints", [])
+            ]
+            inserted = 0
+            for day, metric, harness, fingerprint in rows:
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO fingerprints(day, metric, harness, fingerprint)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (day, metric, harness, fingerprint),
+                )
+                inserted += cursor.rowcount
+            stamp = imported_at.isoformat()
+            connection.execute(
+                """
+                INSERT INTO imported_snapshots(machine, slot, payload_hash, imported_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (machine, slot, digest, stamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO machines(machine, initialized_at, last_seen_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(machine) DO UPDATE SET last_seen_at=excluded.last_seen_at
+                """,
+                (machine, payload.get("collected_at") or stamp, payload.get("collected_at") or stamp),
+            )
+            for item in payload.get("coverage", []):
+                connection.execute(
+                    """
+                    INSERT INTO machine_coverage(
+                        day, machine, harness, status, detail, collected_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(day, machine, harness) DO UPDATE SET
+                        status=excluded.status,
+                        detail=excluded.detail,
+                        collected_at=excluded.collected_at
+                    """,
+                    (
+                        item.get("day"),
+                        machine,
+                        item.get("harness"),
+                        item.get("status"),
+                        item.get("detail") or "",
+                        item.get("collected_at") or stamp,
+                    ),
+                )
+            start = date.fromisoformat(str(payload["start"]))
+            end = date.fromisoformat(str(payload["end"]))
+            self._apply_combined_counts(connection, start, end, stamp)
+        return {"status": "imported", "inserted": inserted, "slot": slot}
+
+    def imported_slots(self, machine: str) -> set[int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT slot FROM imported_snapshots WHERE machine=?",
+                (machine,),
+            )
+            return {int(row["slot"]) for row in rows}
+
+    def _upsert_fingerprint_rows(
+        self, connection: sqlite3.Connection, collection: Collection
+    ) -> None:
+        for result in collection.harnesses:
+            self._upsert_result_fingerprints(connection, result)
+
+    def _upsert_result_fingerprints(
+        self, connection: sqlite3.Connection, result: HarnessResult
+    ) -> None:
+        if result.signer is None:
+            return
+        for day, identities in result.session_ids.items():
+            for fingerprint in identities:
+                if not is_fingerprint(fingerprint):
+                    continue
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO fingerprints(day, metric, harness, fingerprint)
+                    VALUES (?, 'sessions', ?, ?)
+                    """,
+                    (day.isoformat(), result.harness, fingerprint),
+                )
+        for day, identities in result.prompt_fingerprints.items():
+            for fingerprint in identities:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO fingerprints(day, metric, harness, fingerprint)
+                    VALUES (?, 'prompts', ?, ?)
+                    """,
+                    (day.isoformat(), result.harness, fingerprint),
+                )
+
+    def _combined_reporting_start(self, connection: sqlite3.Connection) -> date | None:
+        rows = list(
+            connection.execute("SELECT machine, initialized_at FROM machines")
+        )
+        names = {str(row["machine"]) for row in rows}
+        if not {"mac", "cloud"} <= names:
+            return None
+        latest = max(
+            datetime.fromisoformat(str(row["initialized_at"]))
+            for row in rows
+            if row["machine"] in {"mac", "cloud"}
+        )
+        return date.fromordinal(latest.date().toordinal() + 1)
+
+    def _apply_combined_counts(
+        self,
+        connection: sqlite3.Connection,
+        start: date,
+        end: date,
+        stamp: str,
+    ) -> None:
+        combined = self._combined_reporting_start(connection)
+        if combined is None:
+            return
+        first = start if start >= combined else combined
+        if first > end:
+            return
+        rows = connection.execute(
+            """
+            SELECT day, metric, harness, COUNT(*) AS count
+            FROM fingerprints
+            WHERE day BETWEEN ? AND ?
+            GROUP BY day, metric, harness
+            """,
+            (first.isoformat(), end.isoformat()),
+        )
+        for row in rows:
+            connection.execute(
+                """
+                INSERT INTO daily_metrics(day, metric, harness, count, collected_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(day, metric, harness) DO UPDATE SET
+                    count=excluded.count,
+                    collected_at=excluded.collected_at
+                """,
+                (row["day"], row["metric"], row["harness"], int(row["count"]), stamp),
+            )
 
     def series(self, start: date, end: date) -> list[sqlite3.Row]:
         with self.connect() as connection:

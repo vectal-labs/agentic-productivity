@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .fingerprints import FingerprintSigner
 
 
 @dataclass(frozen=True)
@@ -24,14 +28,50 @@ class HarnessResult:
         default_factory=lambda: defaultdict(set)
     )
     prompts: Counter[date] = field(default_factory=Counter)
+    prompt_fingerprints: dict[date, set[str]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
     coverage: Coverage | None = None
+    signer: FingerprintSigner | None = None
+    ambiguous_prompts: int = 0
 
     def add_session(self, day: date, session_id: str) -> None:
-        self.session_ids[day].add(session_id)
+        token = session_id
+        if self.signer is not None:
+            token = self.signer.session(self.harness, session_id)
+        self.session_ids[day].add(token)
 
-    def add_prompt(self, day: date, count: int = 1) -> None:
-        if count > 0:
-            self.prompts[day] += count
+    def add_prompt(
+        self,
+        day: date,
+        count: int = 1,
+        *,
+        entry_id: Any = None,
+        timestamp: Any = None,
+        session_id: str = "",
+        role: str = "",
+        content: Any = None,
+        ordinal: int | None = None,
+    ) -> None:
+        if self.signer is None:
+            if count > 0:
+                self.prompts[day] += count
+            return
+        fingerprint = self.signer.prompt(
+            self.harness,
+            entry_id=entry_id,
+            timestamp=timestamp,
+            session_id=session_id,
+            role=role,
+            content=content,
+            ordinal=ordinal,
+        )
+        if fingerprint is None:
+            self.ambiguous_prompts += max(1, count)
+            return
+        if fingerprint not in self.prompt_fingerprints[day]:
+            self.prompt_fingerprints[day].add(fingerprint)
+            self.prompts[day] += 1
 
     def session_counts(self) -> dict[date, int]:
         return {day: len(ids) for day, ids in self.session_ids.items()}

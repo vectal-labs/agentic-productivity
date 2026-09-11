@@ -26,6 +26,14 @@ Collectors read native local stores whenever possible. Paths are relative to the
 | Qwen Code | `~/.qwen/tmp/**/session-*.json` | Sessions and instruction-role messages |
 | Amp | Authenticated `amp threads list/export` | Sessions and instruction-role messages. The CLI is not started unless `~/.local/share/amp/session.json` or `secrets.json` already exists |
 
+## Cloud native collector
+
+The Mac LaunchAgent still runs every five minutes. The main Linux VM runs the same collectors from a copied runtime under `~/.local/share/corral/agentic-productivity`, on a systemd user timer at the same interval. Cloud collection continues without the Mac or BB.
+
+Both machines use the Mac timezone. Each collector writes opaque HMAC fingerprints into local SQLite. The Mac pulls cloud snapshot files over verified SSH and unions fingerprints. Replaying a snapshot does not change counts. BB wrappers stay out of native session and prompt totals.
+
+Combined reporting starts at the next Mac-local midnight after both collectors initialize. Missing, stale, unsupported, and partial coverage is shown in the Discord summary. Missing cloud data is never a confirmed zero.
+
 ## BB placement
 
 `agentic_productivity/bb.py` uses the installed BB CLI and `~/.bb/host-id`. It returns only local, cloud, and unknown counts plus coverage. The CLI is discovered on PATH or in the standard BB desktop app locations, so the LaunchAgent's minimal PATH works. BB subprocesses also search the CLI directory and standard Homebrew locations for Node. Each BB command has a 20-second timeout; raw output and errors are never persisted.
@@ -39,6 +47,6 @@ This is a separate placement series, not another native session harness. See [me
 - A collector with unreadable data reports `partial`, `unavailable`, or `error`; it must not silently claim full coverage.
 - Amp's CLI can open a browser login page. The collector refuses to start it without a local login file, and sets `BROWSER` to a no-op.
 - Empty session files with no real turn (title slot or header only) are not counted.
-- Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp.
+- Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp, and once across machines after fingerprint union.
 - Git roots are stored only in the local aggregate database. Reports contain repository and root counts, never paths or repository names.
-- Commits are attributed by local creation reflog entries, not by email or identity. Every commit created on this machine counts, regardless of the configured Git identity at the time.
+- Commits are attributed by local creation reflog entries, not by email or identity. Every commit created on this machine counts, regardless of the configured Git identity at the time. Cloud Git commits are not merged into this series.

@@ -1,0 +1,14 @@
+[Unit]
+Description=Agentic productivity native collector
+
+[Service]
+Type=oneshot
+Nice=10
+Environment=TZ=__TZ__
+Environment=PYTHONPATH=__APP_DIR__
+Environment=CORRAL_PRODUCTIVITY_HOME=__HOME__
+Environment=CORRAL_PRODUCTIVITY_STATE_DIR=__STATE_DIR__
+Environment=CORRAL_PRODUCTIVITY_MACHINE=cloud
+ExecStart=__PYTHON__ -m agentic_productivity.cli collect --days 90 --json --quiet --snapshot
+StandardOutput=append:__OUT_LOG__
+StandardError=append:__ERR_LOG__
