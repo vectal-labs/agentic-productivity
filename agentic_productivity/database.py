@@ -429,6 +429,7 @@ class Database:
                 INSERT INTO machines(machine, initialized_at, last_seen_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(machine) DO UPDATE SET last_seen_at=excluded.last_seen_at
+                WHERE julianday(excluded.last_seen_at) > julianday(machines.last_seen_at)
                 """,
                 (machine, stamp, stamp),
             )
@@ -464,6 +465,7 @@ class Database:
                         status=excluded.status,
                         detail=excluded.detail,
                         collected_at=excluded.collected_at
+                    WHERE julianday(excluded.collected_at) >= julianday(machine_coverage.collected_at)
                     """,
                     (
                         day.isoformat(),
@@ -529,6 +531,7 @@ class Database:
                 INSERT INTO machines(machine, initialized_at, last_seen_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(machine) DO UPDATE SET last_seen_at=excluded.last_seen_at
+                WHERE julianday(excluded.last_seen_at) > julianday(machines.last_seen_at)
                 """,
                 (machine, payload.get("collected_at") or stamp, payload.get("collected_at") or stamp),
             )
@@ -542,6 +545,7 @@ class Database:
                         status=excluded.status,
                         detail=excluded.detail,
                         collected_at=excluded.collected_at
+                    WHERE julianday(excluded.collected_at) >= julianday(machine_coverage.collected_at)
                     """,
                     (
                         item.get("day"),

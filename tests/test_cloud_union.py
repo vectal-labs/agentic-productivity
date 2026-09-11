@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
+from dataclasses import replace
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from agentic_productivity.collectors import CollectorContext, collect_codex, collect_omp, collect_pi
@@ -17,6 +21,7 @@ from agentic_productivity.remote import (
     payload_hash,
     validate_snapshot,
     write_snapshot,
+    pull_snapshots,
 )
 from agentic_productivity.reporting import build_report
 
@@ -37,6 +42,9 @@ class CloudUnionTests(unittest.TestCase):
         self.database = Database(self.root / "state/metrics.sqlite3")
         self.signer = FingerprintSigner(KEY)
         self.now = datetime(2026, 9, 13, 8, 0, tzinfo=ZONE)
+        machine = patch.dict(os.environ, {"CORRAL_PRODUCTIVITY_MACHINE": "mac", "TZ": "Europe/Prague"})
+        machine.start()
+        self.addCleanup(machine.stop)
         self.context = CollectorContext(
             home=self.home,
             code_roots=(),
@@ -71,6 +79,135 @@ class CloudUnionTests(unittest.TestCase):
         result = collect_codex(self.context)
         self.assertEqual(result.session_counts()[DAY], 1)
         self.assertEqual(result.prompts[DAY], 1)
+
+    def test_timestamp_variants_union_through_two_native_collectors(self) -> None:
+        for machine in ("mac", "cloud"):
+            self.database.mark_machine(machine, self.now - timedelta(days=2))
+        for machine, stamp in (("mac", STAMP), ("cloud", "2026-09-12T12:00:00+00:00")):
+            home = self.root / machine
+            db = self.database if machine == "mac" else Database(self.root / "remote/metrics.sqlite3")
+            for identity in ("copied-session", "separate-session" if machine == "cloud" else "copied-session"):
+                self.write_jsonl(home / f".codex/sessions/{identity}.jsonl", [
+                    {"type": "session_meta", "payload": {"id": identity}},
+                    {"type": "response_item", "timestamp": stamp,
+                     "payload": {"type": "message", "role": "user", "content": "same instruction"}},
+                ])
+            result = collect_codex(replace(self.context, home=home, database=db, machine=machine))
+            self.assertEqual(result.prompts[DAY], 2 if machine == "cloud" else 1)
+            db.store_harness_result(result, DAY, DAY, self.now)
+            if machine == "cloud":
+                snapshot = export_snapshot(db, machine=machine, slot=1, now=self.now,
+                    start=DAY, end=DAY, timezone_name="Europe/Prague", coverage=[result.coverage])
+                self.database.import_snapshot(snapshot, self.now)
+                self.database.import_snapshot(snapshot, self.now)
+        report = build_report(self.database, DAY, days=1)
+        self.assertEqual(report.totals["sessions"], 2)
+        self.assertEqual(report.totals["prompts"], 2)
+
+    def test_cloud_early_scan_stays_incomplete_until_day_is_closed(self) -> None:
+        for machine in ("mac", "cloud"):
+            self.database.mark_machine(machine, self.now - timedelta(days=2))
+        early = datetime(2026, 9, 12, 0, 5, tzinfo=ZONE)
+        self.database.store_machine_coverage("cloud", DAY, [Coverage("Codex", True, "full")], early)
+        self.database.mark_machine("cloud", early)
+        self.assertIn("cloud incomplete", build_report(self.database, DAY, days=1).content)
+        payload = export_snapshot(self.database, machine="cloud", slot=2, now=self.now,
+            start=DAY, end=self.now.date(), timezone_name="Europe/Prague",
+            coverage=[Coverage("Codex", True, "full")])
+        self.database.import_snapshot(payload, self.now)
+        self.assertNotIn("cloud incomplete", build_report(self.database, DAY, days=1).content)
+        # An older catch-up snapshot must not undo the newer checkpoint.
+        old = export_snapshot(self.database, machine="cloud", slot=1, now=early,
+            start=DAY, end=DAY, timezone_name="Europe/Prague",
+            coverage=[Coverage("Codex", True, "error")])
+        self.database.import_snapshot(old, self.now)
+        self.assertNotIn("cloud Codex error", build_report(self.database, DAY, days=1).content)
+        cloud = next(row for row in self.database.machines() if row["machine"] == "cloud")
+        self.assertEqual(cloud["last_seen_at"], self.now.isoformat())
+        # A heartbeat or a scan of another day cannot close this day's coverage.
+        unclosed = DAY + timedelta(days=1)
+        self.database.store_machine_coverage("cloud", unclosed, [Coverage("Codex", True, "full")], self.now)
+        self.database.mark_machine("cloud", self.now + timedelta(days=1))
+        self.assertIn("cloud incomplete", build_report(self.database, unclosed, days=1).content)
+        # Midnight is evaluated on the Mac calendar, even for UTC snapshots.
+        closed = datetime.fromisoformat("2026-09-13T22:00:00+00:00")
+        self.database.store_machine_coverage("cloud", unclosed, [Coverage("Codex", True, "full")], closed)
+        self.database.store_machine_coverage("cloud", unclosed, [Coverage("Codex", True, "error")], self.now)
+        self.database.mark_machine("cloud", early)
+        self.assertNotIn("cloud incomplete", build_report(self.database, unclosed, days=1).content)
+        self.assertNotIn("cloud Codex error", build_report(self.database, unclosed, days=1).content)
+
+    def test_invalid_snapshot_is_not_a_successful_import(self) -> None:
+        from agentic_productivity.cli import _import_cloud
+
+        for machine in ("mac", "cloud"):
+            self.database.mark_machine(machine, self.now - timedelta(days=2))
+
+        incoming = self.root / "state/snapshots/incoming"
+        incoming.mkdir(parents=True)
+        (incoming / "cloud-1.json").write_text("{partial", encoding="utf-8")
+        with patch("agentic_productivity.cli.pull_snapshots", return_value={"status": "ok"}):
+            result = _import_cloud(self.database, self.now)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cloud collector error", build_report(self.database, self.now.date(), days=1).content)
+        self.assertEqual(self.database.imported_slots("cloud"), set())
+        payload = export_snapshot(self.database, machine="cloud", slot=1, now=self.now,
+            start=DAY, end=DAY, timezone_name="Europe/Prague", coverage=[Coverage("Codex", True, "full")])
+        malformed = []
+        for field, value in (("machine", []), ("slot", True), ("start", "invalid")):
+            malformed.append({**payload, field: value})
+        bad_coverage = deepcopy(payload)
+        bad_coverage["coverage"][0]["status"] = "invalid"
+        malformed.append(bad_coverage)
+        malformed.append({**payload, "machine": "mac"})
+        for bad in malformed:
+            with self.subTest(payload=bad):
+                (incoming / "cloud-1.json").write_text(json.dumps(bad), encoding="utf-8")
+                with patch("agentic_productivity.cli.pull_snapshots", return_value={"status": "ok"}):
+                    self.assertEqual(_import_cloud(self.database, self.now)["status"], "error")
+                self.assertEqual(self.database.imported_slots("cloud"), set())
+        (incoming / "cloud-1.json").write_text(json.dumps(payload), encoding="utf-8")
+        with patch("agentic_productivity.cli.pull_snapshots", return_value={"status": "ok"}):
+            self.assertEqual(_import_cloud(self.database, self.now)["imported"], 1)
+            self.assertEqual(_import_cloud(self.database, self.now)["replayed"], 1)
+        self.assertNotIn("cloud collector error", build_report(self.database, self.now.date(), days=1).content)
+        # A successful empty transport alone is not native coverage.
+        self.assertIn("cloud missing", build_report(self.database, self.now.date(), days=1).content)
+
+    def test_interrupted_snapshot_download_is_retried_atomically(self) -> None:
+        state = self.root / "state"
+        incoming = state / "snapshots/incoming"
+        incoming.mkdir(parents=True)
+        destination = incoming / "cloud-1.json"
+        destination.write_text("{partial", encoding="utf-8")
+        (state / "remote.json").write_text(json.dumps({"remote_snapshots": "/snapshots", "ssh": {
+            "host": "example.invalid", "user": "user", "identity_file": "/key", "known_hosts": "/hosts",
+        }}), encoding="utf-8")
+        payload = export_snapshot(self.database, machine="cloud", slot=1, now=self.now,
+            start=DAY, end=DAY, timezone_name="Europe/Prague", coverage=[Coverage("Codex", True, "full")])
+        attempts = []
+
+        def transfer(argv, **kwargs):
+            if argv[0] == "ssh":
+                return subprocess.CompletedProcess(argv, 0, "cloud-1.json\n", "")
+            target = Path(argv[-1])
+            self.assertNotEqual(target, destination)
+            attempts.append(target)
+            target.write_text("{partial" if len(attempts) == 1 else json.dumps(
+                {**payload, "machine": "mac"} if len(attempts) == 2 else payload))
+            if len(attempts) == 1:
+                raise subprocess.TimeoutExpired(argv, 45)
+            return subprocess.CompletedProcess(argv, 0)
+
+        with patch("agentic_productivity.remote.subprocess.run", side_effect=transfer):
+            self.assertEqual(pull_snapshots(state)["status"], "error")
+            self.assertEqual(pull_snapshots(state)["status"], "error")
+            self.assertEqual(pull_snapshots(state)["status"], "ok")
+            self.assertEqual(pull_snapshots(state)["imported"], 0)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(json.loads(destination.read_text()), payload)
+        self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(any(incoming.glob("*.tmp")))
 
     def test_forked_history_keeps_original_and_counts_new_child_turn(self) -> None:
         copied = {

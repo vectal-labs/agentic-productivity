@@ -144,7 +144,8 @@ class BbTests(unittest.TestCase):
         node.chmod(0o755)
         (self.home / ".local").mkdir()
         self.bin.rename(self.home / ".local/bin")
-        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+        # Emulate launchd without Node, including on Linux where /usr/bin has it.
+        with mock.patch.dict(os.environ, {"PATH": str(self.root / "minimal-path")}):
             sample = bb.scan_bb(self.home)
         self.assertEqual(sample.coverage.status, "full")
         self.assertEqual(sample.cloud, 1)

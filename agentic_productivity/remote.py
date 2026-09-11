@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -81,12 +83,13 @@ def export_snapshot(
         "fingerprints": fingerprints,
         "coverage": [
             {
-                "day": end.isoformat(),
+                "day": date.fromordinal(ordinal).isoformat(),
                 "harness": item.harness,
                 "status": item.status,
                 "detail": item.detail,
                 "collected_at": now.isoformat(),
             }
+            for ordinal in range(start.toordinal(), end.toordinal() + 1)
             for item in coverage
         ],
     }
@@ -103,20 +106,24 @@ def write_snapshot(state_dir: Path, payload: dict[str, Any]) -> Path:
 def validate_snapshot(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("snapshot must be an object")
-    extra = set(payload) - ALLOWED_SNAPSHOT_KEYS
-    if extra:
-        raise ValueError("snapshot contains unsupported fields")
+    if set(payload) != ALLOWED_SNAPSHOT_KEYS:
+        raise ValueError("snapshot fields are invalid")
     if payload.get("v") != SNAPSHOT_VERSION:
         raise ValueError("unsupported snapshot version")
     machine = payload.get("machine")
-    if machine not in {"mac", "cloud"}:
+    if not isinstance(machine, str) or machine not in {"mac", "cloud"}:
         raise ValueError("snapshot machine is invalid")
     slot = payload.get("slot")
-    if not isinstance(slot, int) or slot < 0:
+    if type(slot) is not int or slot < 0:
         raise ValueError("snapshot slot is invalid")
     for key in ("collected_at", "timezone", "start", "end"):
         if not isinstance(payload.get(key), str) or not payload[key]:
             raise ValueError(f"snapshot {key} is invalid")
+    start = date.fromisoformat(payload["start"])
+    end = date.fromisoformat(payload["end"])
+    collected = datetime.fromisoformat(payload["collected_at"])
+    if start > end or (end - start).days >= 366 or collected.tzinfo is None:
+        raise ValueError("snapshot window is invalid")
     rows = payload.get("fingerprints")
     if not isinstance(rows, list):
         raise ValueError("snapshot fingerprints are invalid")
@@ -124,18 +131,28 @@ def validate_snapshot(payload: Any) -> dict[str, Any]:
         if not isinstance(row, list) or len(row) != 4:
             raise ValueError("snapshot fingerprint row is invalid")
         day, metric, harness, fingerprint = row
-        if metric not in {"sessions", "prompts"}:
+        if not isinstance(metric, str) or metric not in {"sessions", "prompts"}:
             raise ValueError("snapshot metric is invalid")
         if not isinstance(day, str) or not isinstance(harness, str):
             raise ValueError("snapshot fingerprint fields are invalid")
-        if not is_fingerprint(str(fingerprint)):
+        if not start <= date.fromisoformat(day) <= end:
+            raise ValueError("snapshot fingerprint day is outside its window")
+        if not isinstance(fingerprint, str) or not is_fingerprint(fingerprint):
             raise ValueError("snapshot fingerprint is invalid")
     coverage = payload.get("coverage")
     if not isinstance(coverage, list):
         raise ValueError("snapshot coverage is invalid")
     for item in coverage:
-        if not isinstance(item, dict) or set(item) - ALLOWED_COVERAGE_KEYS:
+        if not isinstance(item, dict) or set(item) != ALLOWED_COVERAGE_KEYS:
             raise ValueError("snapshot coverage row is invalid")
+        if not all(isinstance(item[key], str) for key in ALLOWED_COVERAGE_KEYS):
+            raise ValueError("snapshot coverage fields are invalid")
+        if not start <= date.fromisoformat(item["day"]) <= end:
+            raise ValueError("snapshot coverage day is outside its window")
+        checked = datetime.fromisoformat(item["collected_at"])
+        if checked.tzinfo is None or checked > collected:
+            raise ValueError("snapshot coverage timestamp is invalid")
+        Coverage(item["harness"], True, item["status"], item["detail"])
     return payload
 
 
@@ -184,7 +201,7 @@ def pull_snapshots(state_dir: Path, *, timeout: int = 45) -> dict[str, Any]:
         "-o",
         f"UserKnownHostsFile={ssh['known_hosts']}",
         f"{ssh['user']}@{ssh['host']}",
-        f"python3 -c 'import os,sys; print(\"\\n\".join(sorted(os.listdir(sys.argv[1]))))' {remote_dir}",
+        f"python3 -c 'import os,sys; print(\"\\n\".join(sorted(os.listdir(sys.argv[1]))))' {shlex.quote(remote_dir)}",
     ]
     if ssh.get("port"):
         argv[1:1] = ["-p", str(ssh["port"])]
@@ -201,12 +218,21 @@ def pull_snapshots(state_dir: Path, *, timeout: int = 45) -> dict[str, Any]:
         return {"status": "error", "detail": "cloud SSH listing failed", "imported": 0}
     if listed.returncode != 0:
         return {"status": "error", "detail": "cloud SSH listing failed", "imported": 0}
-    names = [line.strip() for line in listed.stdout.splitlines() if line.strip().endswith(".json")]
+    names = [line.strip() for line in listed.stdout.splitlines()
+             if re.fullmatch(r"cloud-\d+\.json", line.strip())]
     copied = 0
     for name in names:
         destination = local_dir / name
         if destination.is_file():
-            continue
+            try:
+                cached = load_snapshot(destination)
+                if name == f"{cached['machine']}-{cached['slot']}.json":
+                    continue
+            except (OSError, ValueError):
+                pass
+        descriptor, temporary_name = tempfile.mkstemp(dir=local_dir, prefix=f".{name}.", suffix=".tmp")
+        os.close(descriptor)
+        temporary = Path(temporary_name)
         scp = [
             "scp",
             "-i",
@@ -220,15 +246,23 @@ def pull_snapshots(state_dir: Path, *, timeout: int = 45) -> dict[str, Any]:
             "-o",
             f"UserKnownHostsFile={ssh['known_hosts']}",
             f"{ssh['user']}@{ssh['host']}:{remote_dir}/{name}",
-            str(destination),
+            str(temporary),
         ]
         if ssh.get("port"):
             scp[1:1] = ["-P", str(ssh["port"])]
-        completed = subprocess.run(scp, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout, check=False)
-        if completed.returncode != 0:
-            destination.unlink(missing_ok=True)
-            return {"status": "error", "detail": "cloud snapshot copy failed", "imported": copied}
-        destination.chmod(0o600)
+        try:
+            completed = subprocess.run(scp, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout, check=False)
+            if completed.returncode != 0:
+                raise OSError("copy failed")
+            payload = load_snapshot(temporary)
+            if name != f"{payload['machine']}-{payload['slot']}.json":
+                raise ValueError("snapshot identity mismatch")
+            temporary.chmod(0o600)
+            os.replace(temporary, destination)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return {"status": "error", "detail": "cloud snapshot copy or validation failed; will retry", "imported": copied}
+        finally:
+            temporary.unlink(missing_ok=True)
         copied += 1
     return {"status": "ok", "detail": f"copied {copied} new snapshots", "imported": copied}
 

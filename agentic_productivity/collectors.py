@@ -172,12 +172,14 @@ def _record_prompt(
     role: str = "",
     content: Any = None,
 ) -> None:
-    if not copies.take(entry_id, timestamp, fallback):
+    # Signed results deduplicate their canonical fingerprints. A hash of a raw
+    # record is not a native message ID: formatting and copies can change it.
+    if result.signer is None and not copies.take(entry_id, timestamp, fallback):
         return
     result.add_prompt(
         day,
-        entry_id=copies.last_id,
-        timestamp=timestamp if timestamp is not None else copies.last_stamp,
+        entry_id=entry_id,
+        timestamp=timestamp,
         session_id=session_id,
         role=role,
         content=content,

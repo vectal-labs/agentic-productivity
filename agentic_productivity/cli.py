@@ -233,17 +233,23 @@ def _import_cloud(database: Database, now: datetime) -> dict[str, Any]:
     incoming = snapshot_directory(database.path.parent) / "incoming"
     imported = 0
     replayed = 0
+    invalid = 0
     if incoming.is_dir():
         for path in sorted(incoming.glob("*.json")):
             try:
                 payload = load_snapshot(path)
-            except (OSError, ValueError, json.JSONDecodeError):
+                if payload["machine"] != "cloud" or path.name != f"cloud-{payload['slot']}.json":
+                    raise ValueError("snapshot identity mismatch")
+            except (OSError, ValueError):
+                invalid += 1
                 continue
             result = database.import_snapshot(payload, now)
             if result["status"] == "imported":
                 imported += 1
             else:
                 replayed += 1
+    if invalid:
+        pull = {"status": "error", "detail": f"{invalid} invalid cloud snapshots; will retry"}
     if pull.get("status") != "ok":
         status = "unavailable" if pull.get("status") == "missing" else "error"
         database.store_machine_coverage(

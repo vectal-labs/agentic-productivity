@@ -10,11 +10,12 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 from .database import Database
+from .local_timezone import local_timezone
 
 
 QUICKCHART_URL = "https://quickchart.io/chart"
@@ -313,11 +314,14 @@ def build_report(
         cloud_rows = [
             row
             for row in database.machine_coverage_rows(report_day, report_day)
-            if row["machine"] == "cloud" and row["harness"] != "Git"
+            if row["machine"] == "cloud" and row["harness"] not in {"Git", "cloud collector"}
         ]
         if not cloud_rows:
             notes.append("cloud missing")
         else:
+            day_end = datetime.combine(report_day + timedelta(days=1), time.min, local_timezone())
+            if any(datetime.fromisoformat(row["collected_at"]) < day_end for row in cloud_rows):
+                notes.insert(0, "cloud incomplete")
             last_seen = next(
                 (
                     row["last_seen_at"]
