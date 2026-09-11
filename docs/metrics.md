@@ -29,6 +29,19 @@
 - Deduplicate copied prompts within each harness by native entry identity plus timestamp, across files. A fork or export that reprints the same entry counts once. New turns in the child file still count.
 - Never store prompt text in the aggregate database.
 
+## 4. BB thread placement
+
+- Scan `bb machine list --json` and `bb thread list --include-hidden --json` every five minutes. No AI agent runs the scan.
+- Count visible, unarchived, undeleted threads across all projects, including idle threads. Count each thread once.
+- Read the Mac's identity from `~/.bb/host-id` (`BB_DATA_DIR` is supported). Match thread environment host IDs; do not infer placement from names or providers.
+- **MacBook** is that local host. **Cloud** means another registered BB host, including temporarily disconnected hosts. This is a local/remote placement metric; BB does not distinguish cloud VMs from another physical remote computer.
+- Missing or removed hosts are unknown. Exclude unknown placement from the two percentages and report its share separately.
+- Store aggregate counts and coverage, with one replaceable observation per five-minute interval. No thread or host IDs, names, prompts, or paths are retained.
+- Each daily cloud percentage is `100 × sum(cloud counts) / sum(local + cloud counts)` across available snapshots on that local day. Local is the complementary share. This measures open-thread placement, not execution time or daily unique sessions.
+- No BB, an unreadable identity, invalid data, or a failed request produces a coverage state. Failed scans, empty fleets, and days without measurements never become 0% cloud.
+- History starts with the first scan. Do not backfill from current placement. Sleeping Macs and unreachable BB leave coverage gaps; there is no overnight extrapolation.
+- Keep BB placement separate from native session totals to avoid counting their BB wrappers twice.
+
 ## Time window
 
 - Daily boundaries use the Mac's automatically detected local timezone.
@@ -39,6 +52,7 @@
 
 - Commits use a daily line and area chart.
 - Sessions and prompts use stacked daily bars. Bar height is the total; colored segments are harness contributions.
-- The gray dashed line is an ordinary least-squares straight trend across the full displayed window.
+- The original three charts have a gray dashed least-squares trend across the displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
+- BB placement uses two smooth lines, MacBook and Cloud, on a fixed 0–100% axis. Monotone interpolation prevents overshoot; missing days break the lines.
 - Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels.

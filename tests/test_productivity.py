@@ -1187,7 +1187,7 @@ esac
         self.assertEqual(_linear_trend([4, 4, 4]), [4.0, 4.0, 4.0])
         self.assertEqual(_linear_trend([]), [])
 
-    def test_report_contains_only_aggregates_and_mock_sends_three_files(self) -> None:
+    def test_report_contains_only_aggregates_and_mock_sends_four_files(self) -> None:
         sensitive = "never-send-this-prompt"
         harness = HarnessResult("Codex")
         harness.add_session(DAY, "private-session-id")
@@ -1213,12 +1213,13 @@ esac
         self.assertNotIn("private-session-id", serialized)
         self.assertNotIn("Partial coverage", report.content)
         self.assertNotIn("All installed collectors", report.content)
-        self.assertEqual(len(report.charts), 3)
+        self.assertEqual(len(report.charts), 4)
         self.assertEqual(len(report.charts[0].config["data"]["labels"]), DEFAULT_REPORT_DAYS)
         for chart in report.charts:
             self.assertIn("last 90 days", chart.config["options"]["plugins"]["title"]["text"])
             self.assertTrue(chart.config["options"]["plugins"]["legend"]["display"])
             self.assertEqual(chart.config["options"]["plugins"]["legend"]["position"], "top")
+        for chart in report.charts[:3]:
             trend = chart.config["data"]["datasets"][-1]
             self.assertEqual(trend["label"], "Long-term trend")
             self.assertEqual(trend["type"], "line")
@@ -1229,7 +1230,7 @@ esac
             self.assertEqual(trend["lineTension"], 0)
             self.assertNotIn("order", trend)
             self.assertEqual(len(trend["data"]), DEFAULT_REPORT_DAYS)
-        for chart in report.charts[1:]:
+        for chart in report.charts[1:3]:
             self.assertEqual(chart.config["type"], "bar")
             self.assertTrue(chart.config["options"]["scales"]["x"]["stacked"])
             self.assertTrue(chart.config["options"]["scales"]["y"]["stacked"])
@@ -1237,6 +1238,7 @@ esac
             "1-commits.png",
             "2-sessions.png",
             "3-prompts.png",
+            "4-bb-placement.png",
         ])
 
     def test_renderer_requests_the_90_day_full_hd_style(self) -> None:
@@ -1302,7 +1304,7 @@ esac
         )
         chart_data = json.loads((report_dir / "charts.json").read_text(encoding="utf-8"))
         self.assertEqual(chart_data["report_day"], DAY.isoformat())
-        self.assertEqual(len(chart_data["charts"]), 3)
+        self.assertEqual(len(chart_data["charts"]), 4)
         self.assertEqual(report_dir.stat().st_mode & 0o777, 0o700)
         for path in report_dir.iterdir():
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -1429,7 +1431,7 @@ esac
         body = json.loads(mocked.stdout)
         self.assertEqual(body["status"], "mock-delivered")
         self.assertFalse(body["network"])
-        self.assertEqual(len(body["attachments"]), 3)
+        self.assertEqual(len(body["attachments"]), 4)
 
     def test_installer_is_idempotent_and_plist_contains_no_secret(self) -> None:
         app = self.root / "installed/app"

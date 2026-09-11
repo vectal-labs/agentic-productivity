@@ -51,7 +51,7 @@ class Chart:
 class Report:
     day: date
     content: str
-    charts: tuple[Chart, Chart, Chart]
+    charts: tuple[Chart, ...]
     totals: dict[str, int]
 
 
@@ -296,6 +296,49 @@ def build_report(
         f"Commits: **{totals['commits']}** · Sessions: **{totals['sessions']}** · "
         f"Prompts: **{totals['prompts']}**"
     )
+    placement = {row["day"]: dict(row) for row in database.bb_placement_series(start, report_day)}
+    shares: dict[str, list[float | None]] = {"MacBook": [], "Cloud": []}
+    for day in spine:
+        row = placement.get(day.isoformat(), {})
+        local = row.get("local_count") or 0
+        cloud = row.get("cloud_count") or 0
+        known = local + cloud
+        shares["MacBook"].append(round(100 * local / known, 2) if known else None)
+        shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
+    measured_days = sum(value is not None for value in shares["Cloud"])
+    placement_options = _base_options(f"BB open threads — last {days} days")
+    placement_options["scales"]["y"].update({
+        "min": 0, "max": 100,
+        "title": {"display": True, "text": "Open threads (%)", "color": "#94A3B8", "font": {"size": 20}},
+    })
+    placement_options["plugins"]["subtitle"] = {
+        "display": True,
+        "text": f"Daily share of classified threads · {measured_days} measured {'day' if measured_days == 1 else 'days'} · gaps are unmeasured",
+        "color": "#94A3B8", "font": {"size": 21}, "padding": {"bottom": 12},
+    }
+    placement_chart = Chart("4-bb-placement.png", {
+        "type": "line",
+        "data": {"labels": labels, "datasets": [
+            {
+                "label": name, "data": values, "borderColor": color, "backgroundColor": color,
+                "borderWidth": 4, "fill": False, "pointRadius": 3, "pointHoverRadius": 6,
+                "cubicInterpolationMode": "monotone", "tension": 0.35, "spanGaps": False,
+            }
+            for (name, values), color in zip(shares.items(), ("#60A5FA", "#34D399"), strict=True)
+        ]},
+        "options": placement_options,
+    })
+    last = placement.get(report_day.isoformat(), {})
+    if shares["Cloud"][-1] is not None:
+        content += (f"\nBB open threads: MacBook **{shares['MacBook'][-1]:.1f}%** · "
+                    f"Cloud **{shares['Cloud'][-1]:.1f}%** (daily share)")
+    else:
+        content += "\nBB open threads: **no measured percentage** for this day."
+    if last:
+        content += f"\nBB scans: {last['samples']}/{last['attempts']} available."
+        if last["unknown_count"]:
+            observed = (last["local_count"] or 0) + (last["cloud_count"] or 0) + last["unknown_count"]
+            content += f" Unknown placement: {100 * last['unknown_count'] / observed:.1f}% of thread observations, excluded."
     charts = (
         Chart(
             "1-commits.png",
@@ -324,6 +367,7 @@ def build_report(
                 single=False,
             ),
         ),
+        placement_chart,
     )
     return Report(report_day, content, charts, totals)
 

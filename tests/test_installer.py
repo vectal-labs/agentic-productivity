@@ -180,6 +180,7 @@ class InstallerTests(unittest.TestCase):
                 return_value={"coverage": {"Git": "full", "Codex": "full"}},
             ) as collect,
             mock.patch.object(cli, "load_webhook", return_value="configured") as webhook,
+            mock.patch.object(cli, "_observe_bb", return_value={"coverage": "full"}) as bb_scan,
         ):
             result = cli._run_install_preflight(
                 database,
@@ -192,10 +193,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         collect.assert_called_once()
         webhook.assert_called_once_with(timeout=60)
+        bb_scan.assert_called_once()
         completed = installer.wait_for_install_preflight(
             self.state, token, timeout=0.1
         )
-        self.assertEqual(completed["coverage"], {"Git": "full", "Codex": "full"})
+        self.assertEqual(completed["coverage"], {"Git": "full", "Codex": "full", "BB placement": "full"})
 
     def test_local_timezone_uses_the_os_zone_name(self) -> None:
         with (

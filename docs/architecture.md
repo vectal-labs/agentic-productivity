@@ -2,16 +2,17 @@
 
 ## Data flow
 
-1. Native collectors read local agent registries and Git reflogs.
+1. Native collectors read local agent registries and Git reflogs. A separate BB scan reads current thread placement.
 2. The collector converts events into daily aggregate counts in the Mac's local timezone.
-3. SQLite stores only daily counts, collector health, hashed Cursor source keys, baselines, and delivery state.
-4. The reporter builds three 90-day Chart.js configurations.
+3. SQLite stores daily counts, aggregate BB placement snapshots, collector health, hashed Cursor source keys, baselines, and delivery state.
+4. The reporter builds four 90-day Chart.js configurations.
 5. With Discord configured, QuickChart renders the aggregate configurations into PNG files and Discord receives the daily totals and attachments.
 6. Without Discord, or after a delivery failure, the summary and Chart.js data are saved locally without fallback PNGs.
 
 ## Components
 
 - `agentic_productivity/collectors.py`: native registry and Git collectors
+- `agentic_productivity/bb.py`: read-only BB placement scan
 - `agentic_productivity/database.py`: aggregate SQLite schema and idempotent delivery state
 - `agentic_productivity/reporting.py`: chart configuration, trendlines, Keychain access, QuickChart, and Discord delivery
 - `agentic_productivity/cli.py`: manual and scheduled command orchestration
@@ -31,6 +32,6 @@ The webhook is separate from both locations. It lives in macOS Keychain under th
 ## Failure behavior
 
 - Collector failures become explicit health states.
-- Daily counts use monotonic upserts, so a later incomplete collection cannot erase a higher count.
+- Daily event counts use monotonic upserts. BB placement uses replaceable five-minute snapshots because open-thread counts can rise or fall; failed observations stay missing.
 - Delivery claims are stored before network calls to avoid accidental duplicate reports.
 - Failed deliveries record a short error, save a local fallback, and can be retried.

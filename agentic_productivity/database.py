@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .model import Collection, HarnessResult
+from .bb import BbPlacement
 
 
 SCHEMA = """
@@ -63,6 +64,16 @@ CREATE TABLE IF NOT EXISTS code_roots (
     detected_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bb_placement_samples (
+    slot INTEGER PRIMARY KEY,
+    day TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    local_count INTEGER CHECK (local_count >= 0),
+    cloud_count INTEGER CHECK (cloud_count >= 0),
+    unknown_count INTEGER CHECK (unknown_count >= 0),
+    status TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS deliveries (
     report_day TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status IN ('sending', 'sent', 'failed')),
@@ -103,7 +114,7 @@ class Database:
         try:
             connection.executescript(SCHEMA)
             connection.execute(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '3')"
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '4')"
             )
             connection.commit()
             yield connection
@@ -119,6 +130,47 @@ class Database:
                 "INSERT INTO code_roots(path, detected_at) VALUES(?, ?)",
                 ((str(root), detected_at.isoformat()) for root in roots),
             )
+
+    def store_bb_placement(self, sample: BbPlacement, now: datetime) -> None:
+        with self.connect() as connection:
+            # One observation per scheduled interval, including manual retries.
+            connection.execute(
+                """
+                INSERT INTO bb_placement_samples
+                    (slot, day, observed_at, local_count, cloud_count, unknown_count, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(slot) DO UPDATE SET
+                    day=excluded.day, observed_at=excluded.observed_at,
+                    local_count=excluded.local_count, cloud_count=excluded.cloud_count,
+                    unknown_count=excluded.unknown_count, status=excluded.status
+                WHERE excluded.observed_at >= bb_placement_samples.observed_at
+                """,
+                (int(now.timestamp()) // 300, now.date().isoformat(), now.isoformat(),
+                 sample.local, sample.cloud, sample.unknown, sample.coverage.status),
+            )
+            item = sample.coverage
+            connection.execute(
+                """
+                INSERT INTO collector_health(harness, installed, status, detail, checked_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(harness) DO UPDATE SET
+                    installed=excluded.installed, status=excluded.status,
+                    detail=excluded.detail, checked_at=excluded.checked_at
+                """,
+                (item.harness, int(item.installed), item.status, item.detail, now.isoformat()),
+            )
+
+    def bb_placement_series(self, start: date, end: date) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return list(connection.execute(
+                """
+                SELECT day, SUM(local_count) AS local_count, SUM(cloud_count) AS cloud_count,
+                    SUM(unknown_count) AS unknown_count,
+                    COUNT(local_count) AS samples, COUNT(*) AS attempts
+                FROM bb_placement_samples WHERE day BETWEEN ? AND ? GROUP BY day ORDER BY day
+                """,
+                (start.isoformat(), end.isoformat()),
+            ))
 
     def code_roots(self) -> tuple[Path, ...]:
         with self.connect() as connection:

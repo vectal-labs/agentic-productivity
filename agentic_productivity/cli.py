@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .bb import scan_bb
 from .collectors import (
     CollectorContext,
     collect_all,
@@ -175,6 +176,21 @@ def _observe_cursor_cli(database: Database, home: Path, now: datetime) -> dict[s
     }
 
 
+def _observe_bb(database: Database, home: Path, now: datetime) -> dict[str, Any]:
+    sample = scan_bb(home)
+    database.store_bb_placement(sample, now)
+    known = (sample.local or 0) + (sample.cloud or 0)
+    return {
+        "coverage": sample.coverage.status,
+        "detail": sample.coverage.detail,
+        "local": sample.local,
+        "cloud": sample.cloud,
+        "unknown": sample.unknown,
+        "local_percent": round(100 * sample.local / known, 2) if known else None,
+        "cloud_percent": round(100 * sample.cloud / known, 2) if known else None,
+    }
+
+
 def _run_install_preflight(
     database: Database,
     home: Path,
@@ -200,6 +216,7 @@ def _run_install_preflight(
             days=days,
             now=now,
         )
+        collection["coverage"]["BB placement"] = _observe_bb(database, home, now)["coverage"]
         webhook_accessible = (
             not webhook_expected or load_webhook(timeout=60) is not None
         )
@@ -353,6 +370,9 @@ def parser() -> argparse.ArgumentParser:
     collect.add_argument("--days", type=int, default=DEFAULT_REPORT_DAYS)
     collect.add_argument("--json", action="store_true")
 
+    scan = sub.add_parser("scan-bb", help="store one local/cloud BB placement snapshot")
+    scan.add_argument("--json", action="store_true")
+
     for name, help_text in (
         ("run", "run the scheduled report"),
         ("mock", "run end-to-end without network or delivery state"),
@@ -407,12 +427,18 @@ def main(argv: list[str] | None = None) -> int:
         result = _doctor(home, database, zone)
         _emit(result, as_json)
         return 0 if result["ok"] else 1
+    if arguments.command == "scan-bb":
+        result = _observe_bb(database, home, now)
+        _emit(result, as_json)
+        return 0 if result["coverage"] in {"full", "partial", "absent"} else 1
     if arguments.command == "collect":
         if arguments.days < 1 or arguments.days > 366:
             print("collect: --days must be between 1 and 366", file=sys.stderr)
             return 2
         end = arguments.end or (now.date() - timedelta(days=1))
-        _emit(_collect(database, home, end=end, days=arguments.days, now=now), as_json)
+        result = _collect(database, home, end=end, days=arguments.days, now=now)
+        result["bb_observation"] = _observe_bb(database, home, now)
+        _emit(result, as_json)
         return 0
 
     report_day = arguments.date or (now.date() - timedelta(days=1))
@@ -428,7 +454,9 @@ def main(argv: list[str] | None = None) -> int:
                 _emit(preflight, as_json)
             return 0 if preflight.get("status") == "ready" else 1
     observation = None
+    bb_observation = None
     if arguments.command == "run":
+        bb_observation = _observe_bb(database, home, now)
         observation = _observe_cursor_cli(database, home, now)
     if arguments.command == "run" and not arguments.force and not arguments.dry_run:
         if now.hour < 8:
@@ -438,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
                         "status": "waiting-for-08:00",
                         "timezone": getattr(zone, "key", None) or str(zone),
                         "cursor_observation": observation,
+                        "bb_observation": bb_observation,
                     },
                     as_json,
                 )
@@ -454,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if observation is not None:
         result["cursor_observation"] = observation
+    if bb_observation is not None:
+        result["bb_observation"] = bb_observation
     quiet_statuses = {
         "already-saved-local",
         "already-sending-or-sent",

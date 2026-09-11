@@ -26,6 +26,12 @@ Collectors read native local stores whenever possible. Paths are relative to the
 | Qwen Code | `~/.qwen/tmp/**/session-*.json` | Sessions and instruction-role messages |
 | Amp | Authenticated `amp threads list/export` | Sessions and instruction-role messages. The CLI is not started unless `~/.local/share/amp/session.json` or `secrets.json` already exists |
 
+## BB placement
+
+`agentic_productivity/bb.py` uses the installed BB CLI and `~/.bb/host-id`. It returns only local, cloud, and unknown counts plus coverage. The CLI is discovered on PATH or in the standard BB desktop app locations, so the LaunchAgent's minimal PATH works. BB subprocesses also search the CLI directory and standard Homebrew locations for Node. Each BB command has a 20-second timeout; raw output and errors are never persisted.
+
+This is a separate placement series, not another native session harness. See [metric definitions](metrics.md#4-bb-thread-placement). Run `./bin/agentic-productivity scan-bb --json` for one scan without reporting or sending anything.
+
 ## Known limitations
 
 - Cursor CLI's native store has session-level timestamps but no historical per-turn timestamps. The five-minute observer creates exact daily prompt deltas after its first baseline. Earlier multi-day attribution remains partial. ACP sessions from `cursor-agent acp` use the same `store.db` format under `~/.cursor/acp-sessions` and are counted in this harness.
