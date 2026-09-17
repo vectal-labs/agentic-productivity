@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -93,18 +94,25 @@ def _recent_files(roots: Iterable[Path], pattern: str, start_timestamp: float) -
     return sorted(paths.values())
 
 
-def _json_lines(path: Path) -> Iterable[dict[str, Any]]:
+def _json_lines(
+    path: Path, *, on_error: Callable[[], None] | None = None
+) -> Iterable[dict[str, Any]]:
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+        with path.open("r", encoding="utf-8", errors="strict" if on_error else "replace") as handle:
             for line in handle:
                 try:
                     value = json.loads(line)
                 except json.JSONDecodeError:
+                    if on_error:
+                        on_error()
                     continue
                 if isinstance(value, dict):
                     yield value
-    except OSError:
-        return
+                elif on_error:
+                    on_error()
+    except (OSError, UnicodeError):
+        if on_error:
+            on_error()
 
 
 def _content_has_instruction(content: Any) -> bool:
@@ -294,28 +302,62 @@ def collect_claude(context: CollectorContext) -> HarnessResult:
 
 
 def _collect_pi_family(
-    context: CollectorContext, *, harness: str, root: Path, command: str
+    context: CollectorContext, *, harness: str, roots: tuple[Path, ...], command: str
 ) -> HarnessResult:
-    installed = _command_installed(command) or root.exists()
     result = _result(harness, context)
+    issues = 0
+
+    def unreadable(_error: OSError | None = None) -> None:
+        nonlocal issues
+        issues += 1
+
+    # rglob suppresses directory access errors. Keep these visible in coverage.
+    files: dict[Path, Path] = {}
+    available_roots = 0
+    threshold = context.start_timestamp - 2 * 86400
+    for root in roots:
+        try:
+            root.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            unreadable()
+            continue
+        available_roots += 1
+        for directory, _, names in os.walk(root, onerror=unreadable):
+            for name in names:
+                if not name.endswith(".jsonl"):
+                    continue
+                path = Path(directory) / name
+                try:
+                    info = path.stat()
+                    if stat.S_ISREG(info.st_mode) and info.st_mtime >= threshold:
+                        files[path.resolve()] = path
+                except OSError:
+                    unreadable()
+    installed = bool(available_roots or issues) or _command_installed(command)
     if not installed:
         result.coverage = Coverage(harness, False, "absent")
         return result
-    files = _recent_files([root], "*.jsonl", context.start_timestamp)
     copies = _PromptCopies()
-    for path in files:
+    for path in sorted(files.values()):
         session_id = path.stem
         activity: set[date] = set()
         real_turn = False
-        for row in _json_lines(path):
+        for row in _json_lines(path, on_error=unreadable):
             row_type = row.get("type")
+            message = row.get("message") if isinstance(row.get("message"), dict) else {}
+            if not isinstance(row_type, str) or (
+                row_type == "message" and not isinstance(message.get("role"), str)
+            ):
+                unreadable()
+                continue
             if row_type == "session":
                 session_id = str(row.get("id") or session_id)
                 continue
             if row_type == "title":
                 continue
             day = _day(row.get("timestamp"), context.timezone)
-            message = row.get("message") if isinstance(row.get("message"), dict) else {}
             is_init = row_type == "session_init" and _content_has_instruction(
                 row.get("task")
             )
@@ -326,6 +368,8 @@ def _collect_pi_family(
             )
             if is_init or is_instruction:
                 real_turn = True
+                if day is None:
+                    unreadable()
             if context.includes(day):
                 activity.add(day)
                 if is_init or is_instruction:
@@ -344,7 +388,10 @@ def _collect_pi_family(
             continue
         for day in activity:
             result.add_session(day, session_id)
-    result.coverage = Coverage(harness, True, "full", f"{len(files)} recent session files")
+    detail = f"{len(files)} recent session files across {available_roots} session roots"
+    if issues:
+        detail += f"; {issues} unreadable sources or malformed records"
+    result.coverage = Coverage(harness, True, "partial" if issues else "full", detail)
     return result
 
 
@@ -1468,10 +1515,14 @@ def collect_amp(context: CollectorContext) -> HarnessResult:
 
 
 def collect_pi(context: CollectorContext) -> HarnessResult:
+    bb_home = Path(os.environ.get("BB_DATA_DIR") or context.home / ".bb").expanduser()
     return _collect_pi_family(
         context,
         harness="Pi Agent",
-        root=context.home / ".pi/agent/sessions",
+        roots=(
+            context.home / ".pi/agent/sessions",
+            bb_home / "pi-bridge-sessions",
+        ),
         command="pi",
     )
 
@@ -1480,7 +1531,7 @@ def collect_prime(context: CollectorContext) -> HarnessResult:
     return _collect_pi_family(
         context,
         harness="Prime Agent",
-        root=context.home / ".prime/agent/sessions",
+        roots=(context.home / ".prime/agent/sessions",),
         command="prime-agent",
     )
 
@@ -1665,7 +1716,7 @@ def collect_omp(context: CollectorContext) -> HarnessResult:
     return _collect_pi_family(
         context,
         harness="Oh My Pi",
-        root=context.home / ".omp/agent/sessions",
+        roots=(context.home / ".omp/agent/sessions",),
         command="omp",
     )
 

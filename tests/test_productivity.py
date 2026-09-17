@@ -307,7 +307,7 @@ class ProductivityTests(unittest.TestCase):
         pi_result = _collect_pi_family(
             self.context,
             harness="Pi Agent",
-            root=self.home / ".pi/agent/sessions",
+            roots=(self.home / ".pi/agent/sessions",),
             command="definitely-not-installed",
         )
         droid_result = collect_droid(self.context)
@@ -315,6 +315,129 @@ class ProductivityTests(unittest.TestCase):
         self.assertEqual(pi_result.prompts[DAY], 1)
         self.assertEqual(droid_result.prompts[DAY], 1)
         self.assertEqual(droid_result.session_counts()[DAY], 1)
+
+    def test_bb_pi_prompts_reach_cli_report_once_under_pi_not_codex(self) -> None:
+        parent = {"type": "session", "id": "private-parent", "timestamp": STAMP}
+        prompt = {
+            "type": "message", "id": "private-prompt", "timestamp": STAMP,
+            "message": {"role": "user", "content": "private instruction"},
+        }
+        self.write_jsonl(self.home / ".pi/agent/sessions/project/parent.jsonl", [parent, prompt])
+        self.write_jsonl(self.home / ".codex/sessions/real-codex.jsonl", [
+            {"type": "session_meta", "payload": {"id": "real-codex"}},
+            {"type": "response_item", "timestamp": "2026-08-07T22:30:00Z",
+             "payload": {"type": "message", "role": "user", "content": "codex instruction"}},
+        ])
+        for custom in (False, True):
+            with self.subTest(custom_bb_directory=custom):
+                bb = self.home / ("custom-bb" if custom else ".bb")
+                if custom:
+                    # The cloud can have BB sessions without native Pi session files.
+                    (self.home / ".pi/agent/sessions/project/parent.jsonl").unlink()
+                    for path in (self.home / ".bb/pi-bridge-sessions").rglob("*.jsonl"):
+                        path.unlink()
+                self.write_jsonl(bb / "pi-bridge-sessions/thread/parent.jsonl", [parent, prompt])
+                self.write_jsonl(bb / "pi-bridge-sessions/thread/fork.jsonl", [
+                    {**parent, "id": "private-fork", "parentSession": "private-parent"},
+                    {"type": "model_change", "provider": "openai-codex", "timestamp": STAMP},
+                    {**prompt, "timestamp": "2026-08-07T12:00:00+00:00"},
+                    {**prompt, "id": "private-followup", "timestamp": "2026-08-07T13:00:00Z"},
+                    {**prompt, "id": "private-next-day", "timestamp": "2026-08-07T22:30:00Z"},
+                    {"type": "message", "timestamp": STAMP,
+                     "message": {"role": "assistant", "content": "not an instruction"}},
+                    {"type": "message", "timestamp": STAMP,
+                     "message": {"role": "toolResult", "content": "not an instruction"}},
+                ])
+                state = self.root / f"cli-state-{custom}"
+                environment = os.environ.copy()
+                environment.pop("BB_DATA_DIR", None)
+                environment.update({
+                    "CORRAL_PRODUCTIVITY_HOME": str(self.home),
+                    "CORRAL_PRODUCTIVITY_STATE_DIR": str(state),
+                    "CORRAL_PRODUCTIVITY_CODE_ROOT": str(self.code),
+                    "CORRAL_PRODUCTIVITY_MACHINE": "mac",
+                    "TZ": "Europe/Warsaw",
+                })
+                if custom:
+                    environment["BB_DATA_DIR"] = str(bb)
+                for _ in range(2):
+                    run = subprocess.run(
+                        [str(PRODUCTIVITY_ROOT / "bin/agentic-productivity"),
+                         "mock", "--date", "2026-08-08", "--days", "2", "--json"],
+                        env=environment, text=True, capture_output=True, timeout=30,
+                    )
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    body = json.loads(run.stdout)
+                    self.assertEqual(body["status"], "mock-delivered")
+                    self.assertFalse(body["network"])
+                    self.assertEqual(body["totals"]["prompts"], 2)
+                    self.assertEqual(body["totals"]["sessions"], 2)
+                database = Database(state / "metrics.sqlite3")
+                rows = {(r["day"], r["metric"], r["harness"]): r["count"]
+                        for r in database.series(DAY, date(2026, 8, 8))}
+                self.assertEqual(rows[("2026-08-07", "prompts", "Pi Agent")], 2)
+                self.assertEqual(rows[("2026-08-07", "sessions", "Pi Agent")], 2)
+                self.assertEqual(rows[("2026-08-08", "prompts", "Pi Agent")], 1)
+                self.assertEqual(rows[("2026-08-08", "prompts", "Codex")], 1)
+                report = build_report(database, date(2026, 8, 8), days=2)
+                series = {d["label"]: d["data"] for d in report.charts[2].config["data"]["datasets"]}
+                self.assertEqual(series["Pi Agent"], [2, 1])
+                with database.connect() as connection:
+                    dumped = "\n".join(connection.iterdump())
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM deliveries").fetchone()[0], 0)
+                self.assertNotIn("private-", dumped)
+                self.assertNotIn("private instruction", dumped)
+                self.assertNotIn(str(bb), dumped)
+
+    def test_pi_coverage_preserves_good_prompts_when_sources_are_unreadable(self) -> None:
+        good = self.home / ".pi/agent/sessions/good.jsonl"
+        bridge = self.home / ".bb/pi-bridge-sessions"
+        broken = bridge / "broken.jsonl"
+        rows = [
+            {"type": "session", "id": "good", "timestamp": STAMP},
+            {"type": "message", "id": "prompt", "timestamp": STAMP,
+             "message": {"role": "user", "content": "instruction"}},
+        ]
+        self.write_jsonl(good, rows)
+        self.write_jsonl(broken, rows)
+        real_scandir, real_open = os.scandir, Path.open
+
+        def denied_scan(path):
+            if Path(path) == bridge:
+                raise PermissionError("private path must not enter coverage")
+            return real_scandir(path)
+
+        def denied_open(path, *args, **kwargs):
+            if path == broken:
+                raise PermissionError("private path must not enter coverage")
+            return real_open(path, *args, **kwargs)
+
+        for failure in ("directory", "file", "json", "shape", "role", "timestamp", "encoding"):
+            with self.subTest(failure=failure):
+                self.write_jsonl(broken, rows)
+                if failure == "json":
+                    broken.write_text('{"unfinished":')
+                elif failure == "shape":
+                    broken.write_text('["not a session entry"]\n')
+                elif failure == "role":
+                    self.write_jsonl(broken, [{**rows[1], "message": {"role": []}}])
+                elif failure == "timestamp":
+                    self.write_jsonl(broken, [{**rows[1], "timestamp": "invalid"}])
+                elif failure == "encoding":
+                    broken.write_bytes(b'\xff\n')
+                with (
+                    mock.patch.dict(os.environ, {"BB_DATA_DIR": str(self.home / ".bb")}),
+                    mock.patch("os.scandir", side_effect=denied_scan if failure == "directory" else real_scandir),
+                    mock.patch.object(Path, "open", denied_open if failure == "file" else real_open),
+                ):
+                    result = collect_pi(self.context)
+                self.assertEqual(result.prompts[DAY], 1)
+                self.assertEqual(result.coverage.status, "partial")
+                self.assertNotIn("private path", result.coverage.detail)
+                self.assertNotIn(str(self.home), result.coverage.detail)
+        broken.unlink()
+        with mock.patch.dict(os.environ, {"BB_DATA_DIR": str(self.home / ".bb")}):
+            self.assertEqual(collect_pi(self.context).coverage.status, "full")
 
     def _omp_title_slot(self, title: str = "draft") -> str:
         slot = {

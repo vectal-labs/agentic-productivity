@@ -15,7 +15,7 @@ Collectors read native local stores whenever possible. Paths are relative to the
 | GitHub Copilot | VS Code `workspaceStorage/**/chatSessions` and global chat stores | Native chat requests |
 | Antigravity | `~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb` | Session timestamps only; prompt history is unavailable |
 | Hermes | `~/.hermes/state.db` | Sessions and instruction-role messages |
-| Pi Agent | `~/.pi/agent/sessions` | Sessions and instruction-role messages |
+| Pi Agent | `~/.pi/agent/sessions` and `~/.bb/pi-bridge-sessions` (`BB_DATA_DIR` overrides `~/.bb`) | Native Pi transcripts from both locations; model providers such as `openai-codex` remain Pi Agent |
 | Oh My Pi | `~/.omp/agent/sessions` | Sessions, instruction-role messages, and `session_init` tasks. Child transcripts are separate sessions |
 | Prime Agent | `~/.prime/agent/sessions` | Sessions and instruction-role messages |
 | Kimi Code | `~/.kimi-code/sessions/**/wire.jsonl` (`KIMI_CODE_HOME` override), legacy `~/.kimi` | Sessions including sub-agents, plus user-turn prompts. Injection and system-origin rows are excluded |
@@ -47,6 +47,7 @@ This is a separate placement series, not another native session harness. See [me
 - A collector with unreadable data reports `partial`, `unavailable`, or `error`; it must not silently claim full coverage.
 - Amp's CLI can open a browser login page. The collector refuses to start it without a local login file, and sets `BROWSER` to a no-op.
 - Empty session files with no real turn (title slot or header only) are not counted.
-- Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp, and once across machines after fingerprint union.
+- Copied prompts, including OMP and Pi forks, count once per native entry id and timestamp across all scanned roots, and once across machines after fingerprint union.
+- Pi-family collectors retain readable records but mark coverage partial for inaccessible directories, unreadable files, malformed JSON, and instruction records without valid timestamps. Coverage describes the configured roots, not arbitrary custom session directories.
 - Git roots are stored only in the local aggregate database. Reports contain repository and root counts, never paths or repository names.
 - Commits are attributed by local creation reflog entries, not by email or identity. Every commit created on this machine counts, regardless of the configured Git identity at the time. Cloud Git commits are not merged into this series.
