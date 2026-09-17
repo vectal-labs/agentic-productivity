@@ -57,4 +57,5 @@
 - The original three charts have a gray dashed least-squares trend across the displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
 - BB placement uses two smooth lines, MacBook and Cloud, on a fixed 0–100% axis. Monotone interpolation prevents overshoot; missing days break the lines.
+- Only the BB placement chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/cloud percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit. The subtitle counts measured dates actually displayed.
 - Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels.

@@ -346,7 +346,10 @@ def build_report(
         shares["MacBook"].append(round(100 * local / known, 2) if known else None)
         shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
     measured_days = sum(value is not None for value in shares["Cloud"])
-    placement_options = _base_options(f"Cloud vs Local usage -- last {days} days")
+    placement_days = min(days, 14 if measured_days <= 14 else 30 if measured_days <= 30 else 90)
+    shares = {name: values[-placement_days:] for name, values in shares.items()}
+    measured_days = sum(value is not None for value in shares["Cloud"])
+    placement_options = _base_options(f"Cloud vs Local usage -- last {placement_days} days")
     placement_options["scales"]["y"].update({
         "min": 0, "max": 100,
         "title": {"display": True, "text": "Open threads (%)", "color": "#94A3B8", "font": {"size": 20}},
@@ -358,7 +361,7 @@ def build_report(
     }
     placement_chart = Chart("4-bb-placement.png", {
         "type": "line",
-        "data": {"labels": labels, "datasets": [
+        "data": {"labels": labels[-placement_days:], "datasets": [
             {
                 "label": name, "data": values, "borderColor": color, "backgroundColor": color,
                 "borderWidth": 4, "fill": False, "pointRadius": 3, "pointHoverRadius": 6,

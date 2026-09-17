@@ -1338,8 +1338,9 @@ esac
         self.assertNotIn("All installed collectors", report.content)
         self.assertEqual(len(report.charts), 4)
         self.assertEqual(len(report.charts[0].config["data"]["labels"]), DEFAULT_REPORT_DAYS)
-        for chart in report.charts:
-            self.assertIn("last 90 days", chart.config["options"]["plugins"]["title"]["text"])
+        for index, chart in enumerate(report.charts):
+            expected_days = 90 if index < 3 else 14
+            self.assertIn(f"last {expected_days} days", chart.config["options"]["plugins"]["title"]["text"])
             self.assertTrue(chart.config["options"]["plugins"]["legend"]["display"])
             self.assertEqual(chart.config["options"]["plugins"]["legend"]["position"], "top")
         for chart in report.charts[:3]:

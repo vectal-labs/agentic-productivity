@@ -182,6 +182,44 @@ class BbTests(unittest.TestCase):
         self.assertIn("no measured percentage", unavailable.content)
         self.assertIn("0/1 available", unavailable.content)
 
+    def test_placement_chart_window_uses_unique_measured_dates(self) -> None:
+        for measured, window in ((0, 14), (1, 14), (6, 14), (14, 14), (15, 30), (30, 30), (31, 90)):
+            with self.subTest(measured=measured):
+                database = Database(self.root / f"window-{measured}/metrics.sqlite3")
+                offsets = [0, 1, 3, 5, 9, 45] if measured == 6 else list(range(measured))
+                for offset in offsets:
+                    stamp = self.now - timedelta(days=offset)
+                    # Multiple snapshots on one day still represent one measured date.
+                    for minute in (0, 5, 10):
+                        database.store_bb_placement(self.sample(10, 0), stamp + timedelta(minutes=minute))
+                for offset, sample in (
+                    (70, self.sample(None, None, None)),
+                    (71, self.sample(0, 0)),
+                    (72, self.sample(0, 0, 3)),
+                    (100, self.sample(5, 5)),
+                ):
+                    database.store_bb_placement(sample, self.now - timedelta(days=offset))
+                report = build_report(database, self.now.date())
+                chart = report.charts[3].config
+                expected_days = [self.now.date() - timedelta(days=i) for i in reversed(range(window))]
+                self.assertEqual(chart["data"]["labels"], [d.strftime("%b %-d") for d in expected_days])
+                self.assertEqual(chart["options"]["plugins"]["title"]["text"],
+                                 f"Cloud vs Local usage -- last {window} days")
+                expected = [0 if (self.now.date() - d).days in offsets else None for d in expected_days]
+                self.assertEqual(chart["data"]["datasets"][1]["data"], expected)
+                self.assertEqual(chart["data"]["datasets"][0]["data"],
+                                 [100 if v is not None else None for v in expected])
+                self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
+                visible = sum(v is not None for v in expected)
+                self.assertIn(f"{visible} measured", chart["options"]["plugins"]["subtitle"]["text"])
+                for other in report.charts[:3]:
+                    self.assertEqual(len(other.config["data"]["labels"]), 90)
+                    self.assertIn("last 90 days", other.config["options"]["plugins"]["title"]["text"])
+                # Explicit shorter reports must not acquire extra days.
+                short = build_report(database, self.now.date(), days=7).charts[3].config
+                self.assertEqual(len(short["data"]["labels"]), 7)
+                self.assertIn("last 7 days", short["options"]["plugins"]["title"]["text"])
+
     def test_schedule_scans_before_morning_and_after_report_was_sent(self) -> None:
         self.write_fleet([self.thread(1, "private-cloud-id")])
         report_day = self.now.date() - timedelta(days=1)
