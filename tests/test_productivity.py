@@ -11,6 +11,7 @@ import sys
 import tempfile
 from dataclasses import replace
 from datetime import date, datetime
+from email import message_from_bytes
 import unittest
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -61,6 +62,7 @@ from agentic_productivity.reporting import (  # noqa: E402
     _linear_trend,
     build_report,
     mock_delivery,
+    post_discord,
     render_chart,
 )
 
@@ -1331,6 +1333,21 @@ esac
             {"content": report.content, "charts": [chart.config for chart in report.charts]}
         )
         delivered = mock_delivery(report)
+        response = mock.MagicMock()
+        response.__enter__.return_value.status = 204
+        with mock.patch("agentic_productivity.reporting.urllib.request.urlopen", return_value=response) as urlopen:
+            post_discord("https://discord.com/api/webhooks/test", report, [MOCK_PNG] * 4)
+        request = urlopen.call_args.args[0]
+        message = message_from_bytes(
+            f"Content-Type: {request.get_header('Content-type')}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+            + request.data
+        )
+        parts = message.get_payload()
+        payload = json.loads(parts[0].get_payload(decode=True))
+        self.assertEqual(set(payload), {"allowed_mentions", "attachments"})
+        self.assertNotIn(report.content.encode(), request.data)
+        self.assertEqual([part.get_filename() for part in parts[1:]], delivered["attachments"])
+        self.assertTrue(all(part.get_payload(decode=True) == MOCK_PNG for part in parts[1:]))
 
         self.assertNotIn(sensitive, serialized)
         self.assertNotIn("private-session-id", serialized)

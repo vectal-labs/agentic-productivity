@@ -6,7 +6,7 @@
 2. Each machine stores daily aggregate counts and opaque fingerprints in local SQLite, using the Mac timezone.
 3. The Mac pulls cloud snapshots over SSH and unions fingerprints for days after combined reporting starts.
 4. The reporter builds four 90-day Chart.js configurations from those aggregates. Fingerprints are not sent to Discord or QuickChart.
-5. With Discord configured, QuickChart renders the aggregate configurations into PNG files and Discord receives the daily totals and attachments.
+5. With Discord configured, QuickChart renders the aggregate configurations into PNG files. Discord receives only the images, with no message text ([ADR 0009](adr/0009-images-only-discord-reports.md)).
 6. Without Discord, or after a delivery failure, the summary and Chart.js data are saved locally without fallback PNGs.
 
 ## Components

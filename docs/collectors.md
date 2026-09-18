@@ -32,7 +32,7 @@ The Mac LaunchAgent still runs every five minutes. The main Linux VM runs the sa
 
 Both machines use the Mac timezone. Each collector writes opaque HMAC fingerprints into local SQLite. The Mac pulls cloud snapshot files over verified SSH and unions fingerprints. Replaying a snapshot does not change counts. BB wrappers stay out of native session and prompt totals.
 
-Combined reporting starts at the next Mac-local midnight after both collectors initialize. Missing, stale, unsupported, and partial coverage is shown in the Discord summary. Missing cloud data is never a confirmed zero.
+Combined reporting starts at the next Mac-local midnight after both collectors initialize. Missing, stale, unsupported, and partial coverage is retained in local state and fallback summaries. Discord sends only chart images. Missing cloud data is never a confirmed zero.
 
 ## Open-thread placement
 

@@ -467,10 +467,9 @@ def render_chart(chart: Chart, *, timeout: int = 20) -> bytes:
         raise RuntimeError("chart service is unreachable") from None
 
 
-def _multipart(content: str, files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
+def _multipart(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
     boundary = "corral-" + secrets.token_hex(16)
     payload = {
-        "content": content,
         "allowed_mentions": {"parse": []},
         "attachments": [
             {"id": index, "filename": filename}
@@ -501,7 +500,8 @@ def _multipart(content: str, files: list[tuple[str, bytes]]) -> tuple[bytes, str
 
 def post_discord(webhook: str, report: Report, images: list[bytes], *, timeout: int = 20) -> None:
     files = [(chart.filename, image) for chart, image in zip(report.charts, images, strict=True)]
-    body, content_type = _multipart(report.content, files)
+    # Summaries stay local; Discord is images-only (ADR 0009).
+    body, content_type = _multipart(files)
     request = urllib.request.Request(
         webhook,
         data=body,
@@ -521,7 +521,6 @@ def post_discord(webhook: str, report: Report, images: list[bytes], *, timeout: 
 def mock_delivery(report: Report) -> dict[str, Any]:
     images = [MOCK_PNG for _ in report.charts]
     body, content_type = _multipart(
-        report.content,
         [(chart.filename, image) for chart, image in zip(report.charts, images, strict=True)],
     )
     if not content_type.startswith("multipart/form-data; boundary="):
