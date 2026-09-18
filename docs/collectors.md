@@ -34,11 +34,13 @@ Both machines use the Mac timezone. Each collector writes opaque HMAC fingerprin
 
 Combined reporting starts at the next Mac-local midnight after both collectors initialize. Missing, stale, unsupported, and partial coverage is shown in the Discord summary. Missing cloud data is never a confirmed zero.
 
-## BB placement
+## Open-thread placement
 
-`agentic_productivity/bb.py` uses the installed BB CLI and `~/.bb/host-id`. It returns only local, cloud, and unknown counts plus coverage. The CLI is discovered on PATH or in the standard BB desktop app locations, so the LaunchAgent's minimal PATH works. BB subprocesses also search the CLI directory and standard Homebrew locations for Node. Each BB command has a 20-second timeout; raw output and errors are never persisted.
+- `agentic_productivity/bb.py` reads official BB's machine/thread lists and `~/.bb/host-id` (`BB_DATA_DIR` supported). The CLI is discovered on PATH or in standard BB app locations; Node lookup includes Homebrew. Commands have a 20-second timeout. Raw output/errors are never persisted.
+- `agentic_productivity/cloudroom.py` reads only placement metadata from `~/.gui-cloudroom/bb.db` and its own `host-id`. SQLite uses `mode=ro` with live WAL support and a two-second lock timeout. The GUI can be closed. No credential, prompt, or transcript reads are needed. Other Cloudroom profiles are not discovered automatically.
+- Both sources return aggregate local/remote/unknown counts and coverage. A failed expected source excludes that paired snapshot; its surviving source is never presented as a complete percentage. Previously measured profiles remain expected if they disappear.
 
-This is a separate placement series, not another native session harness. See [metric definitions](metrics.md#4-bb-thread-placement). Run `./bin/agentic-productivity scan-bb --json` for one scan without reporting or sending anything.
+This stays separate from native session totals. See [metric definitions](metrics.md#4-open-thread-placement). Run `./bin/agentic-productivity scan-placement --json` for one scan without reporting or delivery. `scan-bb` remains an alias; JSON's existing `cloud` fields now mean remote, and `sources` shows individual coverage.
 
 ## Known limitations
 

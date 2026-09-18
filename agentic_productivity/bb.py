@@ -18,6 +18,20 @@ class BbPlacement:
     coverage: Coverage
 
 
+def combine_placement(*samples: BbPlacement) -> BbPlacement:
+    present = [sample for sample in samples if sample.coverage.status != "absent"]
+    if not present:
+        return BbPlacement(None, None, None, Coverage("Thread placement", False, "absent"))
+    if any(sample.local is None or sample.cloud is None or sample.unknown is None for sample in present):
+        status = "error" if any(sample.coverage.status == "error" for sample in present) else "unavailable"
+        return BbPlacement(None, None, None, Coverage("Thread placement", True, status, "An expected source is unavailable"))
+    local = sum(sample.local for sample in present)
+    cloud = sum(sample.cloud for sample in present)
+    unknown = sum(sample.unknown for sample in present)
+    status = "partial" if any(sample.coverage.status == "partial" for sample in present) else "full"
+    return BbPlacement(local, cloud, unknown, Coverage("Thread placement", True, status))
+
+
 def _executable(home: Path) -> str | None:
     if command := shutil.which("bb"):
         return command

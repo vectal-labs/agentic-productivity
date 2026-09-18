@@ -31,18 +31,18 @@
 - Counter-only stores keep the existing baseline rules. Deduplicate cumulative prompt ordinals within each native session. Never add replicated counters together.
 - Never store prompt text in the aggregate database. Fingerprints never enter Discord or chart-rendering requests.
 
-## 4. BB thread placement
+## 4. Open-thread placement
 
-- Scan `bb machine list --json` and `bb thread list --include-hidden --json` every five minutes. No AI agent runs the scan.
-- Count visible, unarchived, undeleted threads across all projects, including idle threads. Count each thread once.
-- Read the Mac's identity from `~/.bb/host-id` (`BB_DATA_DIR` is supported). Match thread environment host IDs; do not infer placement from names or providers.
-- **MacBook** is that local host. **Cloud** means another registered BB host, including temporarily disconnected hosts. This is a local/remote placement metric; BB does not distinguish cloud VMs from another physical remote computer.
-- Missing or removed hosts are unknown. Exclude unknown placement from the two percentages and report its share separately.
-- Store aggregate counts and coverage, with one replaceable observation per five-minute interval. No thread or host IDs, names, prompts, or paths are retained.
-- Each daily cloud percentage is `100 × sum(cloud counts) / sum(local + cloud counts)` across available snapshots on that local day. Local is the complementary share. This measures open-thread placement, not execution time or daily unique sessions.
-- No BB, an unreadable identity, invalid data, or a failed request produces a coverage state. Failed scans, empty fleets, and days without measurements never become 0% cloud.
-- History starts with the first scan. Do not backfill from current placement. Sleeping Macs and unreachable BB leave coverage gaps; there is no overnight extrapolation.
-- Keep BB placement separate from native session totals to avoid counting their BB wrappers twice.
+- Every five minutes, query official BB's machine/thread lists and read Cloudroom's `~/.gui-cloudroom/bb.db` in read-only mode. No AI agent runs the scan.
+- Count visible, unarchived, undeleted threads across all projects, including idle and pending threads. This is not completed tasks, execution time, or daily unique sessions. Short-lived threads can fall between scans.
+- **Local** matches each app's own `host-id`. **Remote** includes Cloudroom's explicit `execution_target='cloud'` and other registered BB hosts, even disconnected ones. Another physical computer also counts as remote. Never infer placement from names or model providers.
+- Cloudroom's explicit target takes precedence over its absent BB environment. Missing or removed hosts on native threads are unknown; exclude them from the percentages and report their share separately.
+- Store only aggregate counts and coverage, once per source per five-minute interval. Retries replace the same interval. Never retain thread/host IDs, names, prompts, or paths. Overlapping BB/Cloudroom profiles fail rather than count twice.
+- Daily remote percentage is `100 × sum(remote counts) / sum(local + remote counts)` across paired, available observations on the Mac's local day. Local is complementary. Never mix successful readings from different intervals to fill a failed pair.
+- An absent, never-measured app is not required. Once observed, a missing profile is unavailable, not zero. An unreadable or unsupported expected source excludes the pair from percentages. Empty fleets and unknown-only days have no percentage.
+- Keep historical BB observations unchanged and label them **BB-only**. On the rollout day, use only scans from the new paired collector. No backfill from today's thread state.
+- Report readable/absent counts per source and sampled slots out of the full local day, including daylight-saving changes. Sleeping Macs and failed scans leave gaps; there is no extrapolation.
+- Keep placement separate from native session totals to avoid counting app wrappers twice.
 
 ## Time window
 
@@ -56,6 +56,6 @@
 - Sessions and prompts use stacked daily bars. Bar height is the total; colored segments are harness contributions.
 - The original three charts have a gray dashed least-squares trend across the displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
-- BB placement uses two smooth lines, MacBook and Cloud, on a fixed 0–100% axis. Monotone interpolation prevents overshoot; missing days break the lines.
-- Only the BB placement chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/cloud percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit. The subtitle counts measured dates actually displayed.
+- Open-thread placement uses Local and Remote lines on a fixed 0–100% axis. Monotone interpolation prevents overshoot; missing days break the lines. The subtitle identifies BB-only history and when Cloudroom collection starts.
+- Only the placement chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/remote percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit. The subtitle counts measured dates actually displayed.
 - Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels.

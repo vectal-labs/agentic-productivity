@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .bb import scan_bb
+from .bb import BbPlacement, combine_placement, scan_bb
+from .cloudroom import scan_cloudroom
 from .collectors import (
     CollectorContext,
     collect_all,
@@ -283,12 +284,26 @@ def _import_cloud(database: Database, now: datetime) -> dict[str, Any]:
 
 
 def _observe_bb(database: Database, home: Path, now: datetime) -> dict[str, Any]:
-    sample = scan_bb(home)
-    database.store_bb_placement(sample, now)
+    seen = database.placement_sources_seen()
+    sources = {"bb": scan_bb(home), "cloudroom": scan_cloudroom(home)}
+    for name, sample in sources.items():
+        if sample.coverage.status == "absent" and name in seen:
+            sources[name] = BbPlacement(None, None, None, Coverage(
+                sample.coverage.harness, True, "unavailable", "Previously measured profile is missing",
+            ))
+    bb_root = Path(os.environ.get("BB_DATA_DIR", home / ".bb")).expanduser()
+    if (bb_root / "bb.db").resolve() == (home / ".gui-cloudroom/bb.db").resolve():
+        sources["cloudroom"] = BbPlacement(None, None, None, Coverage(
+            "Cloudroom placement", True, "error", "BB and Cloudroom profiles overlap; restore separate sources",
+        ))
+    database.store_bb_placement(sources["bb"], now, cloudroom=sources["cloudroom"])
+    sample = combine_placement(*sources.values())
     known = (sample.local or 0) + (sample.cloud or 0)
     return {
         "coverage": sample.coverage.status,
         "detail": sample.coverage.detail,
+        "sources": {name: {"coverage": item.coverage.status, "detail": item.coverage.detail}
+                    for name, item in sources.items()},
         "local": sample.local,
         "cloud": sample.cloud,
         "unknown": sample.unknown,
@@ -322,7 +337,7 @@ def _run_install_preflight(
             days=days,
             now=now,
         )
-        collection["coverage"]["BB placement"] = _observe_bb(database, home, now)["coverage"]
+        collection["coverage"]["Thread placement"] = _observe_bb(database, home, now)["coverage"]
         webhook_accessible = (
             not webhook_expected or load_webhook(timeout=60) is not None
         )
@@ -486,7 +501,7 @@ def parser() -> argparse.ArgumentParser:
     collect.add_argument("--quiet", action="store_true")
     collect.add_argument("--snapshot", action="store_true")
 
-    scan = sub.add_parser("scan-bb", help="store one local/cloud BB placement snapshot")
+    scan = sub.add_parser("scan-placement", aliases=["scan-bb"], help="store one BB + Cloudroom local/remote placement snapshot")
     scan.add_argument("--json", action="store_true")
 
     for name, help_text in (
@@ -543,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
         result = _doctor(home, database, zone)
         _emit(result, as_json)
         return 0 if result["ok"] else 1
-    if arguments.command == "scan-bb":
+    if arguments.command in {"scan-placement", "scan-bb"}:
         result = _observe_bb(database, home, now)
         _emit(result, as_json)
         return 0 if result["coverage"] in {"full", "partial", "absent"} else 1

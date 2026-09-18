@@ -197,7 +197,7 @@ class InstallerTests(unittest.TestCase):
         completed = installer.wait_for_install_preflight(
             self.state, token, timeout=0.1
         )
-        self.assertEqual(completed["coverage"], {"Git": "full", "Codex": "full", "BB placement": "full"})
+        self.assertEqual(completed["coverage"], {"Git": "full", "Codex": "full", "Thread placement": "full"})
 
     def test_local_timezone_uses_the_os_zone_name(self) -> None:
         with (

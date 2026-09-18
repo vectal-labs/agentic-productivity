@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .model import Collection, Coverage, HarnessResult
-from .bb import BbPlacement
+from .bb import BbPlacement, combine_placement
 from .fingerprints import is_fingerprint
 
 
@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS code_roots (
 );
 
 CREATE TABLE IF NOT EXISTS bb_placement_samples (
+    slot INTEGER PRIMARY KEY,
+    day TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    local_count INTEGER CHECK (local_count >= 0),
+    cloud_count INTEGER CHECK (cloud_count >= 0),
+    unknown_count INTEGER CHECK (unknown_count >= 0),
+    status TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloudroom_placement_samples (
     slot INTEGER PRIMARY KEY,
     day TEXT NOT NULL,
     observed_at TEXT NOT NULL,
@@ -151,7 +161,7 @@ class Database:
         try:
             connection.executescript(SCHEMA)
             connection.execute(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '5')"
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '6')"
             )
             connection.commit()
             yield connection
@@ -168,34 +178,96 @@ class Database:
                 ((str(root), detected_at.isoformat()) for root in roots),
             )
 
-    def store_bb_placement(self, sample: BbPlacement, now: datetime) -> None:
+    def store_bb_placement(
+        self, sample: BbPlacement, now: datetime, *, cloudroom: BbPlacement | None = None,
+    ) -> None:
         with self.connect() as connection:
-            # One observation per scheduled interval, including manual retries.
-            connection.execute(
-                """
-                INSERT INTO bb_placement_samples
-                    (slot, day, observed_at, local_count, cloud_count, unknown_count, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(slot) DO UPDATE SET
-                    day=excluded.day, observed_at=excluded.observed_at,
-                    local_count=excluded.local_count, cloud_count=excluded.cloud_count,
-                    unknown_count=excluded.unknown_count, status=excluded.status
-                WHERE excluded.observed_at >= bb_placement_samples.observed_at
-                """,
-                (int(now.timestamp()) // 300, now.date().isoformat(), now.isoformat(),
-                 sample.local, sample.cloud, sample.unknown, sample.coverage.status),
-            )
-            item = sample.coverage
-            connection.execute(
-                """
-                INSERT INTO collector_health(harness, installed, status, detail, checked_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(harness) DO UPDATE SET
-                    installed=excluded.installed, status=excluded.status,
-                    detail=excluded.detail, checked_at=excluded.checked_at
-                """,
-                (item.harness, int(item.installed), item.status, item.detail, now.isoformat()),
-            )
+            # Paired observations commit together, once per five-minute interval.
+            for table, observation in (("bb_placement_samples", sample), ("cloudroom_placement_samples", cloudroom)):
+                if observation is None:
+                    continue
+                connection.execute(
+                    f"""
+                    INSERT INTO {table}
+                        (slot, day, observed_at, local_count, cloud_count, unknown_count, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(slot) DO UPDATE SET
+                        day=excluded.day, observed_at=excluded.observed_at,
+                        local_count=excluded.local_count, cloud_count=excluded.cloud_count,
+                        unknown_count=excluded.unknown_count, status=excluded.status
+                    WHERE excluded.observed_at >= {table}.observed_at
+                    """,
+                    (int(now.timestamp()) // 300, now.date().isoformat(), now.isoformat(),
+                     observation.local, observation.cloud, observation.unknown, observation.coverage.status),
+                )
+                item = observation.coverage
+                connection.execute(
+                    """
+                    INSERT INTO collector_health(harness, installed, status, detail, checked_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(harness) DO UPDATE SET
+                        installed=excluded.installed, status=excluded.status,
+                        detail=excluded.detail, checked_at=excluded.checked_at
+                    """,
+                    (item.harness, int(item.installed), item.status, item.detail, now.isoformat()),
+                )
+
+    def placement_sources_seen(self) -> set[str]:
+        with self.connect() as connection:
+            return {
+                name for name in ("bb", "cloudroom")
+                if connection.execute(
+                    f"SELECT 1 FROM {name}_placement_samples WHERE status != 'absent' LIMIT 1"
+                ).fetchone()
+            }
+
+    def placement_series(self, start: date, end: date) -> list[dict]:
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            first = connection.execute(
+                "SELECT slot, day FROM cloudroom_placement_samples ORDER BY slot LIMIT 1"
+            ).fetchone()
+            rows = list(connection.execute("""
+                SELECT b.*, c.slot AS cloudroom_slot, c.observed_at AS cloudroom_at,
+                    c.local_count AS c_local, c.cloud_count AS c_cloud,
+                    c.unknown_count AS c_unknown, c.status AS c_status
+                FROM bb_placement_samples b
+                LEFT JOIN cloudroom_placement_samples c ON c.slot = b.slot
+                WHERE b.day BETWEEN ? AND ? ORDER BY b.slot
+            """, (start.isoformat(), end.isoformat())))
+        days: dict[str, dict] = {}
+        for row in rows:
+            # A rollout day uses only new scans, never a mix of old and new scopes.
+            if first and row["day"] == first["day"] and row["slot"] < first["slot"]:
+                continue
+            paired = first is not None and row["slot"] >= first["slot"]
+            day = days.setdefault(row["day"], {
+                "day": row["day"], "local_count": 0, "cloud_count": 0, "unknown_count": 0,
+                "samples": 0, "attempts": 0, "bb_samples": 0, "cloudroom_samples": 0,
+                "bb_absent": 0, "cloudroom_absent": 0,
+                "scope": "BB + Cloudroom" if paired else "BB-only",
+            })
+            bb = BbPlacement(row["local_count"], row["cloud_count"], row["unknown_count"],
+                             Coverage("BB placement", True, row["status"]))
+            day["bb_samples"] += bb.local is not None
+            day["bb_absent"] += bb.coverage.status == "absent"
+            day["attempts"] += 1
+            samples = [bb]
+            if paired:
+                cloudroom = BbPlacement(row["c_local"], row["c_cloud"], row["c_unknown"],
+                                        Coverage("Cloudroom placement", True, row["c_status"] or "unavailable"))
+                if row["cloudroom_at"] != row["observed_at"]:
+                    cloudroom = BbPlacement(None, None, None, Coverage("Cloudroom placement", True, "unavailable"))
+                day["cloudroom_samples"] += cloudroom.local is not None
+                day["cloudroom_absent"] += cloudroom.coverage.status == "absent"
+                samples.append(cloudroom)
+            total = combine_placement(*samples)
+            if total.local is not None:
+                day["samples"] += 1
+                day["local_count"] += total.local
+                day["cloud_count"] += total.cloud
+                day["unknown_count"] += total.unknown
+        return list(days.values())
 
     def bb_placement_series(self, start: date, end: date) -> list[sqlite3.Row]:
         with self.connect() as connection:

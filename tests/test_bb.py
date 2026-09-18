@@ -5,6 +5,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from agentic_productivity import bb, cli
 from agentic_productivity.bb import BbPlacement
+from agentic_productivity.cloudroom import scan_cloudroom
 from agentic_productivity.database import Database
 from agentic_productivity.model import Coverage
 from agentic_productivity.reporting import build_report
@@ -73,6 +75,27 @@ class BbTests(unittest.TestCase):
     def sample(self, local: int | None, cloud: int | None, unknown: int | None = 0) -> BbPlacement:
         status = "unavailable" if local is None else "partial" if unknown else "full"
         return BbPlacement(local, cloud, unknown, Coverage("BB placement", True, status))
+
+    def cloudroom_registry(self) -> sqlite3.Connection:
+        root = self.home / ".gui-cloudroom"
+        root.mkdir()
+        (root / "host-id").write_text("private-gui-local")
+        connection = sqlite3.connect(root / "bb.db")
+        self.addCleanup(connection.close)
+        connection.executescript("""
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE hosts (id TEXT PRIMARY KEY, destroyed_at INTEGER);
+            CREATE TABLE environments (id TEXT PRIMARY KEY, host_id TEXT);
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, execution_target TEXT, environment_id TEXT,
+                visibility TEXT DEFAULT 'visible', archived_at INTEGER, deleted_at INTEGER,
+                title TEXT DEFAULT 'private prompt never stored'
+            );
+            INSERT INTO hosts VALUES ('private-gui-local', NULL), ('private-gui-remote', NULL), ('private-gone', 123);
+            INSERT INTO environments VALUES ('local', 'private-gui-local'), ('remote', 'private-gui-remote'), ('gone', 'private-gone');
+            INSERT INTO threads(id, execution_target, environment_id) VALUES ('private-cloud-thread', 'cloud', NULL);
+        """)
+        return connection
 
     def test_scan_cli_counts_open_placement_and_persists_only_aggregates(self) -> None:
         local = self.thread(1, "private-local-id", providerId="cloud-codex")
@@ -177,7 +200,9 @@ class BbTests(unittest.TestCase):
         partial = build_report(self.database, self.now.date(), days=1)
         self.assertIn("2/3 available", partial.content)
         self.assertIn("Unknown placement: 9.1%", partial.content)
-        self.assertIn("MacBook **30.0%**", partial.content)
+        self.assertIn("Local **30.0%**", partial.content)
+        self.assertIn("2/288 daily five-minute slots sampled", partial.content)
+        self.assertIn("BB-only history; Cloudroom was not measured", partial.content)
         unavailable = build_report(self.database, self.now.date() + timedelta(days=1), days=1)
         self.assertIn("no measured percentage", unavailable.content)
         self.assertIn("0/1 available", unavailable.content)
@@ -204,14 +229,14 @@ class BbTests(unittest.TestCase):
                 expected_days = [self.now.date() - timedelta(days=i) for i in reversed(range(window))]
                 self.assertEqual(chart["data"]["labels"], [d.strftime("%b %-d") for d in expected_days])
                 self.assertEqual(chart["options"]["plugins"]["title"]["text"],
-                                 f"Cloud vs Local usage -- last {window} days")
+                                 f"Open threads: local vs remote -- last {window} days")
                 expected = [0 if (self.now.date() - d).days in offsets else None for d in expected_days]
                 self.assertEqual(chart["data"]["datasets"][1]["data"], expected)
                 self.assertEqual(chart["data"]["datasets"][0]["data"],
                                  [100 if v is not None else None for v in expected])
                 self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
                 visible = sum(v is not None for v in expected)
-                self.assertIn(f"{visible} measured", chart["options"]["plugins"]["subtitle"]["text"])
+                self.assertIn(f"{visible} measured", " ".join(chart["options"]["plugins"]["subtitle"]["text"]))
                 for other in report.charts[:3]:
                     self.assertEqual(len(other.config["data"]["labels"]), 90)
                     self.assertIn("last 90 days", other.config["options"]["plugins"]["title"]["text"])
@@ -219,6 +244,117 @@ class BbTests(unittest.TestCase):
                 short = build_report(database, self.now.date(), days=7).charts[3].config
                 self.assertEqual(len(short["data"]["labels"]), 7)
                 self.assertIn("last 7 days", short["options"]["plugins"]["title"]["text"])
+
+    def test_cloudroom_registry_reaches_cli_chart_without_private_data_or_source_writes(self) -> None:
+        connection = self.cloudroom_registry()
+        connection.executescript("""
+            INSERT INTO threads(id, execution_target, environment_id) VALUES
+                ('private-local-thread', 'local', 'local'),
+                ('private-remote-thread', 'local', 'remote'),
+                ('private-unknown-thread', 'local', NULL),
+                ('private-removed-thread', 'local', 'gone');
+            INSERT INTO threads(id, execution_target, visibility, archived_at, deleted_at) VALUES
+                ('private-hidden-thread', 'cloud', 'hidden', NULL, NULL),
+                ('private-archived-thread', 'cloud', 'visible', 123, NULL),
+                ('private-deleted-thread', 'cloud', 'visible', NULL, 123);
+        """)
+        # Keep the writer connected: real GUI updates may still be in the WAL.
+        before = "\n".join(connection.iterdump())
+        local = self.thread(1, "private-local-id")
+        self.write_fleet([local, local])
+        completed = subprocess.run(
+            [sys.executable, "-m", "agentic_productivity.cli", "scan-placement", "--json"],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual((result["local"], result["cloud"], result["unknown"]), (2, 2, 2))
+        self.assertEqual(result["cloud_percent"], 50)
+        self.assertEqual(result["coverage"], "partial")
+        self.assertEqual(result["sources"]["cloudroom"]["coverage"], "partial")
+        self.assertEqual("\n".join(connection.iterdump()), before)
+        with self.database.connect() as stored:
+            day = date.fromisoformat(stored.execute("SELECT day FROM bb_placement_samples").fetchone()[0])
+            dump = "\n".join(stored.iterdump())
+        report = build_report(self.database, day, days=1)
+        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["data"], [50])
+        self.assertIn("BB + Cloudroom", report.content)
+        self.assertIn("Cloudroom 1 readable", report.content)
+        self.assertIn("Unknown placement: 33.3%", report.content)
+        for output in (dump, completed.stdout, report.content, json.dumps(report.charts[3].config)):
+            self.assertNotIn("private-", output)
+            self.assertNotIn("private prompt", output)
+            self.assertNotIn(str(self.home), output)
+
+    def test_cloudroom_failures_and_missing_expected_profiles_never_become_zero(self) -> None:
+        self.write_fleet([self.thread(1, "private-local-id")])
+        absent = cli._observe_bb(self.database, self.home, self.now)
+        self.assertEqual(absent["sources"]["cloudroom"]["coverage"], "absent")
+        self.assertEqual(absent["cloud_percent"], 0)
+        connection = self.cloudroom_registry()
+        valid = cli._observe_bb(self.database, self.home, self.now + timedelta(minutes=5))
+        self.assertEqual(valid["cloud_percent"], 50)
+        connection.execute("UPDATE threads SET execution_target='unsupported'")
+        connection.commit()
+        invalid = cli._observe_bb(self.database, self.home, self.now + timedelta(minutes=10))
+        self.assertEqual(invalid["sources"]["cloudroom"]["coverage"], "error")
+        self.assertIsNone(invalid["cloud_percent"])
+        connection.execute("DELETE FROM threads")
+        connection.commit()
+        empty = scan_cloudroom(self.home)
+        self.assertEqual((empty.local, empty.cloud, empty.coverage.status), (0, 0, "full"))
+        connection.execute("ALTER TABLE threads RENAME COLUMN execution_target TO unsupported")
+        connection.commit()
+        self.assertEqual(scan_cloudroom(self.home).coverage.status, "error")
+        connection.close()
+        root = self.home / ".gui-cloudroom"
+        (root / "bb.db").unlink()
+        missing_file = cli._observe_bb(self.database, self.home, self.now + timedelta(minutes=15))
+        self.assertIsNone(missing_file["cloud_percent"])
+        self.assertFalse((root / "bb.db").exists())
+        root.rename(self.home / "missing-profile")
+        missing_profile = cli._observe_bb(self.database, self.home, self.now + timedelta(minutes=20))
+        self.assertEqual(missing_profile["sources"]["cloudroom"]["coverage"], "unavailable")
+        self.assertIsNone(missing_profile["cloud_percent"])
+        # A missing BB source cannot turn surviving Cloudroom observations into 100% remote either.
+        (self.home / "missing-profile").rename(root)
+        with mock.patch.object(cli, "scan_cloudroom", return_value=self.sample(0, 1)):
+            self.data.rename(self.home / "missing-bb")
+            missing_bb = cli._observe_bb(self.database, self.home, self.now + timedelta(minutes=25))
+        self.assertEqual(missing_bb["sources"]["bb"]["coverage"], "unavailable")
+        self.assertIsNone(missing_bb["cloud_percent"])
+        with mock.patch.dict(os.environ, {"BB_DATA_DIR": str(root)}):
+            overlapping = cli._observe_bb(self.database, self.home, self.now + timedelta(minutes=30))
+        self.assertEqual(overlapping["sources"]["cloudroom"]["coverage"], "error")
+        self.assertIn("overlap", overlapping["sources"]["cloudroom"]["detail"])
+        self.assertIsNone(overlapping["cloud_percent"])
+
+    def test_paired_history_retries_failures_and_rollout_do_not_distort_percentages(self) -> None:
+        save = self.database.store_bb_placement
+        save(self.sample(10, 0), self.now - timedelta(days=1))
+        save(self.sample(100, 0), self.now)
+        first = self.now + timedelta(minutes=5)
+        save(self.sample(3, 1), first, cloudroom=self.sample(0, 2))
+        save(self.sample(2, 2), first + timedelta(seconds=1), cloudroom=self.sample(0, 4))
+        save(self.sample(3, 1), first, cloudroom=self.sample(0, 2))  # stale replay
+        save(self.sample(100, 0), first + timedelta(minutes=5), cloudroom=self.sample(None, None, None))
+        save(self.sample(100, 0), first + timedelta(days=1))  # a missing paired scan, not legacy data
+        save(self.sample(0, 0), first + timedelta(days=2), cloudroom=self.sample(0, 0))
+        save(self.sample(0, 0, 1), first + timedelta(days=3), cloudroom=self.sample(0, 0, 2))
+        report = build_report(self.database, (first + timedelta(days=3)).date(), days=5)
+        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["data"], [0, 75, None, None, None])
+        self.assertIn("BB-only history; BB + Cloudroom from 2026-08-07", report.content)
+        rollout = build_report(self.database, first.date(), days=1)
+        self.assertIn("1/2 available", rollout.content)
+        self.assertIn("Cloudroom 1 readable, 0 absent, 1 unavailable", rollout.content)
+        missing = build_report(self.database, (first + timedelta(days=1)).date(), days=1)
+        self.assertIn("no measured percentage", missing.content)
+        self.assertIn("BB + Cloudroom", missing.content)
+        with self.database.connect() as connection:
+            self.assertEqual(connection.execute("SELECT local_count FROM bb_placement_samples ORDER BY slot LIMIT 1").fetchone()[0], 10)
+        with mock.patch("agentic_productivity.reporting.local_timezone", return_value=ZoneInfo("America/New_York")):
+            for day, slots in ((date(2026, 3, 8), 276), (date(2026, 11, 1), 300)):
+                with self.subTest(day=day):
+                    self.assertIn(f"0/{slots} daily five-minute slots", build_report(self.database, day, days=1).content)
 
     def test_schedule_scans_before_morning_and_after_report_was_sent(self) -> None:
         self.write_fleet([self.thread(1, "private-cloud-id")])

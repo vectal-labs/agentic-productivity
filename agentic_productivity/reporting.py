@@ -336,27 +336,36 @@ def build_report(
                     notes.append("cloud stale")
     if notes:
         content += "\nCoverage: " + "; ".join(notes[:8]) + "."
-    placement = {row["day"]: dict(row) for row in database.bb_placement_series(start, report_day)}
-    shares: dict[str, list[float | None]] = {"MacBook": [], "Cloud": []}
+    placement = {row["day"]: row for row in database.placement_series(start, report_day)}
+    shares: dict[str, list[float | None]] = {"Local": [], "Remote": []}
     for day in spine:
         row = placement.get(day.isoformat(), {})
         local = row.get("local_count") or 0
         cloud = row.get("cloud_count") or 0
         known = local + cloud
-        shares["MacBook"].append(round(100 * local / known, 2) if known else None)
-        shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
-    measured_days = sum(value is not None for value in shares["Cloud"])
+        shares["Local"].append(round(100 * local / known, 2) if known else None)
+        shares["Remote"].append(round(100 * cloud / known, 2) if known else None)
+    measured_days = sum(value is not None for value in shares["Remote"])
     placement_days = min(days, 14 if measured_days <= 14 else 30 if measured_days <= 30 else 90)
     shares = {name: values[-placement_days:] for name, values in shares.items()}
-    measured_days = sum(value is not None for value in shares["Cloud"])
-    placement_options = _base_options(f"Cloud vs Local usage -- last {placement_days} days")
+    measured_days = sum(value is not None for value in shares["Remote"])
+    displayed = [placement[day.isoformat()] for day in spine[-placement_days:] if day.isoformat() in placement]
+    combined_days = [row["day"] for row in displayed if row["scope"] == "BB + Cloudroom"]
+    scope = "Sources checked: BB + Cloudroom" if displayed else "No placement observations"
+    if any(row["scope"] == "BB-only" for row in displayed):
+        scope = (f"BB-only history; BB + Cloudroom from {min(combined_days)}" if combined_days
+                 else "BB-only history; Cloudroom was not measured")
+    placement_options = _base_options(f"Open threads: local vs remote -- last {placement_days} days")
     placement_options["scales"]["y"].update({
         "min": 0, "max": 100,
         "title": {"display": True, "text": "Open threads (%)", "color": "#94A3B8", "font": {"size": 20}},
     })
     placement_options["plugins"]["subtitle"] = {
         "display": True,
-        "text": f"Daily share of classified threads · {measured_days} measured {'day' if measured_days == 1 else 'days'} · gaps are unmeasured",
+        "text": [
+            f"Sampled open threads, not tasks · {measured_days} measured {'day' if measured_days == 1 else 'days'} · gaps are unmeasured",
+            scope,
+        ],
         "color": "#94A3B8", "font": {"size": 21}, "padding": {"bottom": 12},
     }
     placement_chart = Chart("4-bb-placement.png", {
@@ -372,16 +381,28 @@ def build_report(
         "options": placement_options,
     })
     last = placement.get(report_day.isoformat(), {})
-    if shares["Cloud"][-1] is not None:
-        content += (f"\nBB open threads: MacBook **{shares['MacBook'][-1]:.1f}%** · "
-                    f"Cloud **{shares['Cloud'][-1]:.1f}%** (daily share)")
+    if shares["Remote"][-1] is not None:
+        content += (f"\nOpen threads: Local **{shares['Local'][-1]:.1f}%** · "
+                    f"Remote **{shares['Remote'][-1]:.1f}%** (sampled daily share, not tasks)")
     else:
-        content += "\nBB open threads: **no measured percentage** for this day."
+        content += "\nOpen threads: **no measured percentage** for this day."
+    day_start = datetime.combine(report_day, time.min, local_timezone())
+    day_end = datetime.combine(report_day + timedelta(days=1), time.min, day_start.tzinfo)
+    expected_slots = round((day_end.timestamp() - day_start.timestamp()) / 300)
+    content += (f"\nPlacement scans: {last.get('samples', 0)}/{last.get('attempts', 0)} available; "
+                f"{last.get('samples', 0)}/{expected_slots} daily five-minute slots sampled.")
     if last:
-        content += f"\nBB scans: {last['samples']}/{last['attempts']} available."
+        content += f"\nPlacement coverage ({last['scope']}):"
+        for name, label in (("bb", "BB"), ("cloudroom", "Cloudroom")):
+            if name == "cloudroom" and last["scope"] == "BB-only":
+                continue
+            readable, absent = last[f"{name}_samples"], last[f"{name}_absent"]
+            unavailable = last["attempts"] - readable - absent
+            content += f" {label} {readable} readable, {absent} absent, {unavailable} unavailable."
         if last["unknown_count"]:
-            observed = (last["local_count"] or 0) + (last["cloud_count"] or 0) + last["unknown_count"]
+            observed = last["local_count"] + last["cloud_count"] + last["unknown_count"]
             content += f" Unknown placement: {100 * last['unknown_count'] / observed:.1f}% of thread observations, excluded."
+    content += f"\n{scope}."
     charts = (
         Chart(
             "1-commits.png",
