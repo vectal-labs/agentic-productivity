@@ -192,6 +192,8 @@ class BbTests(unittest.TestCase):
         chart = report.charts[3]
         self.assertEqual(chart.filename, "4-bb-placement.png")
         local, cloud = chart.config["data"]["datasets"]
+        self.assertEqual((local["label"], cloud["label"]), ("Local", "Cloud"))
+        self.assertEqual((local["borderColor"], cloud["borderColor"]), ("#60A5FA", "#34D399"))
         self.assertEqual(local["data"], [30, None, None, None, None, 80])
         self.assertEqual(cloud["data"], [70, None, None, None, None, 20])
         self.assertFalse(cloud["spanGaps"])
@@ -201,6 +203,7 @@ class BbTests(unittest.TestCase):
         self.assertIn("2/3 available", partial.content)
         self.assertIn("Unknown placement: 9.1%", partial.content)
         self.assertIn("Local **30.0%**", partial.content)
+        self.assertIn("Cloud **70.0%**", partial.content)
         self.assertIn("2/288 daily five-minute slots sampled", partial.content)
         self.assertIn("BB-only history; Cloudroom was not measured", partial.content)
         unavailable = build_report(self.database, self.now.date() + timedelta(days=1), days=1)
@@ -229,14 +232,13 @@ class BbTests(unittest.TestCase):
                 expected_days = [self.now.date() - timedelta(days=i) for i in reversed(range(window))]
                 self.assertEqual(chart["data"]["labels"], [d.strftime("%b %-d") for d in expected_days])
                 self.assertEqual(chart["options"]["plugins"]["title"]["text"],
-                                 f"Open threads: local vs remote -- last {window} days")
+                                 f"Open threads: local vs cloud -- last {window} days")
                 expected = [0 if (self.now.date() - d).days in offsets else None for d in expected_days]
                 self.assertEqual(chart["data"]["datasets"][1]["data"], expected)
                 self.assertEqual(chart["data"]["datasets"][0]["data"],
                                  [100 if v is not None else None for v in expected])
                 self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
-                visible = sum(v is not None for v in expected)
-                self.assertIn(f"{visible} measured", " ".join(chart["options"]["plugins"]["subtitle"]["text"]))
+                self.assertNotIn("subtitle", chart["options"]["plugins"])
                 for other in report.charts[:3]:
                     self.assertEqual(len(other.config["data"]["labels"]), 90)
                     self.assertIn("last 90 days", other.config["options"]["plugins"]["title"]["text"])
@@ -277,6 +279,8 @@ class BbTests(unittest.TestCase):
             dump = "\n".join(stored.iterdump())
         report = build_report(self.database, day, days=1)
         self.assertEqual(report.charts[3].config["data"]["datasets"][1]["data"], [50])
+        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["label"], "Cloud")
+        self.assertNotIn("subtitle", report.charts[3].config["options"]["plugins"])
         self.assertIn("BB + Cloudroom", report.content)
         self.assertIn("Cloudroom 1 readable", report.content)
         self.assertIn("Unknown placement: 33.3%", report.content)

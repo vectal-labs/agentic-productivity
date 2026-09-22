@@ -337,37 +337,28 @@ def build_report(
     if notes:
         content += "\nCoverage: " + "; ".join(notes[:8]) + "."
     placement = {row["day"]: row for row in database.placement_series(start, report_day)}
-    shares: dict[str, list[float | None]] = {"Local": [], "Remote": []}
+    shares: dict[str, list[float | None]] = {"Local": [], "Cloud": []}
     for day in spine:
         row = placement.get(day.isoformat(), {})
         local = row.get("local_count") or 0
         cloud = row.get("cloud_count") or 0
         known = local + cloud
         shares["Local"].append(round(100 * local / known, 2) if known else None)
-        shares["Remote"].append(round(100 * cloud / known, 2) if known else None)
-    measured_days = sum(value is not None for value in shares["Remote"])
+        shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
+    measured_days = sum(value is not None for value in shares["Cloud"])
     placement_days = min(days, 14 if measured_days <= 14 else 30 if measured_days <= 30 else 90)
     shares = {name: values[-placement_days:] for name, values in shares.items()}
-    measured_days = sum(value is not None for value in shares["Remote"])
     displayed = [placement[day.isoformat()] for day in spine[-placement_days:] if day.isoformat() in placement]
     combined_days = [row["day"] for row in displayed if row["scope"] == "BB + Cloudroom"]
     scope = "Sources checked: BB + Cloudroom" if displayed else "No placement observations"
     if any(row["scope"] == "BB-only" for row in displayed):
         scope = (f"BB-only history; BB + Cloudroom from {min(combined_days)}" if combined_days
                  else "BB-only history; Cloudroom was not measured")
-    placement_options = _base_options(f"Open threads: local vs remote -- last {placement_days} days")
+    placement_options = _base_options(f"Open threads: local vs cloud -- last {placement_days} days")
     placement_options["scales"]["y"].update({
         "min": 0, "max": 100,
         "title": {"display": True, "text": "Open threads (%)", "color": "#94A3B8", "font": {"size": 20}},
     })
-    placement_options["plugins"]["subtitle"] = {
-        "display": True,
-        "text": [
-            f"Sampled open threads, not tasks · {measured_days} measured {'day' if measured_days == 1 else 'days'} · gaps are unmeasured",
-            scope,
-        ],
-        "color": "#94A3B8", "font": {"size": 21}, "padding": {"bottom": 12},
-    }
     placement_chart = Chart("4-bb-placement.png", {
         "type": "line",
         "data": {"labels": labels[-placement_days:], "datasets": [
@@ -381,9 +372,9 @@ def build_report(
         "options": placement_options,
     })
     last = placement.get(report_day.isoformat(), {})
-    if shares["Remote"][-1] is not None:
+    if shares["Cloud"][-1] is not None:
         content += (f"\nOpen threads: Local **{shares['Local'][-1]:.1f}%** · "
-                    f"Remote **{shares['Remote'][-1]:.1f}%** (sampled daily share, not tasks)")
+                    f"Cloud **{shares['Cloud'][-1]:.1f}%** (sampled daily share, not tasks)")
     else:
         content += "\nOpen threads: **no measured percentage** for this day."
     day_start = datetime.combine(report_day, time.min, local_timezone())

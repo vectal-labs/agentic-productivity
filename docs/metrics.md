@@ -35,7 +35,7 @@
 
 - Every five minutes, query official BB's machine/thread lists and read Cloudroom's `~/.gui-cloudroom/bb.db` in read-only mode. No AI agent runs the scan.
 - Count visible, unarchived, undeleted threads across all projects, including idle and pending threads. This is not completed tasks, execution time, or daily unique sessions. Short-lived threads can fall between scans.
-- **Local** matches each app's own `host-id`. **Remote** includes Cloudroom's explicit `execution_target='cloud'` and other registered BB hosts, even disconnected ones. Another physical computer also counts as remote. Never infer placement from names or model providers.
+- **Local** matches each app's own `host-id`. **Cloud** includes Cloudroom's explicit `execution_target='cloud'` and other registered BB hosts, even disconnected ones. Another physical computer also counts as cloud in the chart. Never infer placement from names or model providers.
 - Cloudroom's explicit target takes precedence over its absent BB environment. Missing or removed hosts on native threads are unknown; exclude them from the percentages and report their share separately.
 - Store only aggregate counts and coverage, once per source per five-minute interval. Retries replace the same interval. Never retain thread/host IDs, names, prompts, or paths. Overlapping BB/Cloudroom profiles fail rather than count twice.
 - Daily remote percentage is `100 × sum(remote counts) / sum(local + remote counts)` across paired, available observations on the Mac's local day. Local is complementary. Never mix successful readings from different intervals to fill a failed pair.
@@ -56,6 +56,6 @@
 - Sessions and prompts use stacked daily bars. Bar height is the total; colored segments are harness contributions.
 - The original three charts have a gray dashed least-squares trend across the displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
-- Open-thread placement uses Local and Remote lines on a fixed 0–100% axis. Monotone interpolation prevents overshoot; missing days break the lines. The subtitle identifies BB-only history and when Cloudroom collection starts.
-- Only the placement chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/remote percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit. The subtitle counts measured dates actually displayed.
+- Open-thread placement uses Local and Cloud lines on a fixed 0–100% axis, with no subtitle. Monotone interpolation prevents overshoot; missing days break the lines. Source history and coverage details stay in the local summary.
+- Only the placement chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/cloud percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit.
 - Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels.
