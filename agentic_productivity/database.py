@@ -11,6 +11,7 @@ from typing import Iterator
 from .model import Collection, Coverage, HarnessResult
 from .bb import BbPlacement, combine_placement
 from .fingerprints import is_fingerprint
+from .messages import MESSAGE_SOURCES, MessageScan
 
 
 SCHEMA = """
@@ -85,6 +86,15 @@ CREATE TABLE IF NOT EXISTS cloudroom_placement_samples (
     unknown_count INTEGER CHECK (unknown_count >= 0),
     status TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_message_locations (
+    fingerprint TEXT PRIMARY KEY,
+    day TEXT NOT NULL,
+    location TEXT NOT NULL CHECK (location IN ('local', 'cloud', 'unknown')),
+    source TEXT NOT NULL CHECK (source IN ('bb', 'cloudroom'))
+);
+
+CREATE INDEX IF NOT EXISTS user_message_locations_day ON user_message_locations(day);
 
 CREATE TABLE IF NOT EXISTS deliveries (
     report_day TEXT PRIMARY KEY,
@@ -161,7 +171,7 @@ class Database:
         try:
             connection.executescript(SCHEMA)
             connection.execute(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '6')"
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema', '7')"
             )
             connection.commit()
             yield connection
@@ -280,6 +290,65 @@ class Database:
                 """,
                 (start.isoformat(), end.isoformat()),
             ))
+
+    def user_message_sources_seen(self) -> set[str]:
+        with self.connect() as connection:
+            harnesses = {row[0] for row in connection.execute(
+                "SELECT DISTINCT harness FROM machine_coverage WHERE machine='mac' AND status != 'absent'"
+            )}
+        return {source for source, harness in MESSAGE_SOURCES.items() if harness in harnesses}
+
+    def store_user_messages(
+        self, scans: dict[str, MessageScan], start: date, end: date, collected_at: datetime,
+    ) -> None:
+        stamp = collected_at.isoformat()
+        with self.connect() as connection:
+            for scan in scans.values():
+                for message in scan.messages:
+                    if not is_fingerprint(message.fingerprint):
+                        raise ValueError("User message identity must be an opaque fingerprint")
+                    connection.execute("""
+                        INSERT INTO user_message_locations(fingerprint, day, location, source)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(fingerprint) DO UPDATE SET
+                            location=excluded.location, source=excluded.source
+                        WHERE user_message_locations.location='unknown'
+                            AND excluded.location != 'unknown'
+                    """, (message.fingerprint, message.day.isoformat(), message.location, message.source))
+                day = start
+                item = scan.coverage
+                while day <= end:
+                    connection.execute("""
+                        INSERT INTO machine_coverage(day, machine, harness, status, detail, collected_at)
+                        VALUES (?, 'mac', ?, ?, ?, ?)
+                        ON CONFLICT(day, machine, harness) DO UPDATE SET
+                            status=excluded.status, detail=excluded.detail, collected_at=excluded.collected_at
+                        WHERE julianday(excluded.collected_at) >= julianday(machine_coverage.collected_at)
+                    """, (day.isoformat(), item.harness, item.status, item.detail, stamp))
+                    day = date.fromordinal(day.toordinal() + 1)
+
+    def user_message_series(self, start: date, end: date) -> list[dict]:
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            rows = list(connection.execute("""
+                SELECT day, SUM(location='local') AS local_count,
+                    SUM(location='cloud') AS cloud_count, SUM(location='unknown') AS unknown_count
+                FROM user_message_locations WHERE day BETWEEN ? AND ? GROUP BY day ORDER BY day
+            """, (start.isoformat(), end.isoformat())))
+            coverage: dict[str, dict[str, str]] = {}
+            for row in connection.execute("""
+                SELECT day, harness, status FROM machine_coverage
+                WHERE machine='mac' AND day BETWEEN ? AND ? AND harness IN (?, ?)
+            """, (start.isoformat(), end.isoformat(), *MESSAGE_SOURCES.values())):
+                coverage.setdefault(row["day"], {})[row["harness"]] = row["status"]
+        result = []
+        for row in rows:
+            statuses = coverage.get(row["day"], {})
+            available = len(statuses) == len(MESSAGE_SOURCES) and all(
+                status in {"full", "partial", "absent"} for status in statuses.values()
+            ) and any(status != "absent" for status in statuses.values())
+            result.append({**dict(row), "available": available})
+        return result
 
     def code_roots(self) -> tuple[Path, ...]:
         with self.connect() as connection:

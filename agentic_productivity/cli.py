@@ -23,6 +23,7 @@ from .database import Database
 from .fingerprints import FingerprintSigner, load_fingerprint_key
 from .local_timezone import local_timezone, local_timezone_name
 from .model import Coverage
+from .messages import MESSAGE_SOURCES, MessageScan, scan_messages
 from .remote import (
     collection_slot,
     export_snapshot,
@@ -154,6 +155,8 @@ def _collect(
     start = end - timedelta(days=days - 1)
     zone = now.tzinfo or local_timezone()
     machine = _machine()
+    message_observation = (_observe_messages(database, home, start, end, now)
+                           if machine == "mac" else None)
     signer = _signer(database.path.parent)
     database.mark_machine(machine, now)
     context = CollectorContext(
@@ -190,6 +193,8 @@ def _collect(
         "coverage": coverage,
         "machine": machine,
     }
+    if message_observation is not None:
+        payload["user_messages"] = message_observation
     if snapshot:
         snapshot_payload = export_snapshot(
             database,
@@ -281,6 +286,34 @@ def _import_cloud(database: Database, now: datetime) -> dict[str, Any]:
             now,
         )
     return {"status": pull.get("status"), "imported": imported, "replayed": replayed, "detail": pull.get("detail")}
+
+
+def _observe_messages(
+    database: Database, home: Path, start: date, end: date, now: datetime,
+) -> dict[str, Any]:
+    seen = database.user_message_sources_seen()
+    signer = _signer(database.path.parent)
+    sources = {source: scan_messages(home, source, start, end, now.tzinfo or local_timezone(), signer)
+               for source in MESSAGE_SOURCES}
+    for source, scan in sources.items():
+        if scan.coverage.status == "absent" and source in seen:
+            sources[source] = MessageScan((), Coverage(
+                scan.coverage.harness, True, "unavailable", "Previously measured profile is missing",
+            ))
+    bb_path = Path(os.environ.get("BB_DATA_DIR", home / ".bb")).expanduser() / "bb.db"
+    cloudroom_path = home / ".gui-cloudroom/bb.db"
+    if bb_path.resolve() == cloudroom_path.resolve() or (
+        bb_path.is_file() and cloudroom_path.is_file() and bb_path.samefile(cloudroom_path)
+    ):
+        sources = {source: MessageScan((), Coverage(
+            harness, True, "error", "BB and Cloudroom profiles overlap; restore separate sources",
+        )) for source, harness in MESSAGE_SOURCES.items()}
+    database.store_user_messages(sources, start, end, now)
+    return {
+        "start": start.isoformat(), "end": end.isoformat(),
+        "sources": {source: {"coverage": scan.coverage.status, "detail": scan.coverage.detail}
+                    for source, scan in sources.items()},
+    }
 
 
 def _observe_bb(database: Database, home: Path, now: datetime) -> dict[str, Any]:
@@ -504,6 +537,11 @@ def parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan-placement", aliases=["scan-bb"], help="store one BB + Cloudroom local/remote placement snapshot")
     scan.add_argument("--json", action="store_true")
 
+    messages = sub.add_parser("scan-messages", help="collect daily human messages in BB and Cloudroom")
+    messages.add_argument("--date", type=_parse_day)
+    messages.add_argument("--days", type=int, default=DEFAULT_REPORT_DAYS)
+    messages.add_argument("--json", action="store_true")
+
     for name, help_text in (
         ("run", "run the scheduled report"),
         ("mock", "run end-to-end without network or delivery state"),
@@ -558,6 +596,15 @@ def main(argv: list[str] | None = None) -> int:
         result = _doctor(home, database, zone)
         _emit(result, as_json)
         return 0 if result["ok"] else 1
+    if arguments.command == "scan-messages":
+        if not 1 <= arguments.days <= 366:
+            print("scan-messages: --days must be between 1 and 366", file=sys.stderr)
+            return 2
+        end = arguments.date or now.date()
+        result = _observe_messages(database, home, end - timedelta(days=arguments.days - 1), end, now)
+        _emit(result, as_json)
+        return 0 if all(item["coverage"] in {"full", "partial", "absent"}
+                        for item in result["sources"].values()) else 1
     if arguments.command in {"scan-placement", "scan-bb"}:
         result = _observe_bb(database, home, now)
         _emit(result, as_json)

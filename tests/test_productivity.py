@@ -1379,7 +1379,7 @@ esac
             "1-commits.png",
             "2-sessions.png",
             "3-prompts.png",
-            "4-bb-placement.png",
+            "4-user-messages.png",
         ])
 
     def test_renderer_requests_the_90_day_full_hd_style(self) -> None:

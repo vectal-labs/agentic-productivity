@@ -31,7 +31,18 @@
 - Counter-only stores keep the existing baseline rules. Deduplicate cumulative prompt ordinals within each native session. Never add replicated counters together.
 - Never store prompt text in the aggregate database. Fingerprints never enter Discord or chart-rendering requests.
 
-## 4. Open-thread placement
+## 4. Human-message cloud adoption
+
+- Count messages sent in BB and Cloudroom each Mac-local day, including retained history in archived or deleted threads. Pending drafts do not count until dispatched.
+- Read `client/turn/requested` metadata with `initiator='user'`, no sender thread, and visible text or attachments. Exclude agent/system input, automation markers, retries, continuations, and provider echoes. Grouped input counts each visible message, not one provider turn.
+- Cloud share is `100 × cloud human messages / (local + cloud human messages)`. Local is complementary. Days without known-location messages have no percentage. Today's preview is day-to-date; scheduled reports still end yesterday.
+- Cloudroom's explicit cloud target takes precedence. Otherwise use the event's recorded environment host, falling back to the thread's environment only when the event has none. The app's own host is Local; other registered hosts are Cloud, including historical destroyed hosts. Missing placement remains unknown and is excluded, with counts in the local summary.
+- Deduplicate by an HMAC of the native request ID and message index, across both apps and copied fork history. A copied event cannot establish location because forks rewrite environments. Known original locations stay fixed; unknown locations may be resolved later. Persisted counts survive deletion of native history.
+- Store only day, location, source, and opaque fingerprint. SQL checks content presence without returning prompt text or attachments. Only aggregate percentages leave the Mac.
+- Backfill from retained message events, never from open-thread samples. An unavailable expected source leaves a chart gap, not a misleading 0% or 100%. A never-measured absent app is optional. Local summaries retain source coverage and unknown-location counts.
+- This is separate from the instruction-bearing prompt metric, which includes system and delegated input. Historical attribution cannot recover permanently deleted, never-observed messages or missing original environments.
+
+## Legacy open-thread placement
 
 - Every five minutes, query official BB's machine/thread lists and read Cloudroom's `~/.gui-cloudroom/bb.db` in read-only mode. No AI agent runs the scan.
 - Count visible, unarchived, undeleted threads across all projects, including idle and pending threads. This is not completed tasks, execution time, or daily unique sessions. Short-lived threads can fall between scans.
@@ -41,7 +52,7 @@
 - Daily remote percentage is `100 × sum(remote counts) / sum(local + remote counts)` across paired, available observations on the Mac's local day. Local is complementary. Never mix successful readings from different intervals to fill a failed pair.
 - An absent, never-measured app is not required. Once observed, a missing profile is unavailable, not zero. An unreadable or unsupported expected source excludes the pair from percentages. Empty fleets and unknown-only days have no percentage.
 - Keep historical BB observations unchanged and label them **BB-only**. On the rollout day, use only scans from the new paired collector. No backfill from today's thread state.
-- Report readable/absent counts per source and sampled slots out of the full local day, including daylight-saving changes. Sleeping Macs and failed scans leave gaps; there is no extrapolation.
+- Legacy tables retain readable/absent counts per source and sampled slots. Sleeping Macs and failed scans leave gaps; there is no extrapolation. These diagnostics are no longer included in the daily report.
 - Keep placement separate from native session totals to avoid counting app wrappers twice.
 
 ## Time window
@@ -56,6 +67,6 @@
 - Sessions and prompts use stacked daily bars. Bar height is the total; colored segments are harness contributions.
 - The original three charts have a gray dashed least-squares trend across the displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
-- Open-thread placement uses Local and Cloud lines on a fixed 0–100% axis, with no subtitle. Monotone interpolation prevents overshoot; missing days break the lines. Source history and coverage details stay in the local summary.
-- Only the placement chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/cloud percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit.
+- Human-message adoption uses Local and Cloud lines on a fixed 0–100% axis, with no subtitle. Monotone interpolation prevents overshoot; missing days break the lines. Coverage details stay in the local summary. Legacy open-thread samples never feed this chart.
+- Only the message-adoption chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days. Count dates with a known local/cloud message percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit.
 - Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels.

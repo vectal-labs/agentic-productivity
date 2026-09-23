@@ -336,30 +336,24 @@ def build_report(
                     notes.append("cloud stale")
     if notes:
         content += "\nCoverage: " + "; ".join(notes[:8]) + "."
-    placement = {row["day"]: row for row in database.placement_series(start, report_day)}
+    placement = {row["day"]: row for row in database.user_message_series(start, report_day)}
     shares: dict[str, list[float | None]] = {"Local": [], "Cloud": []}
     for day in spine:
         row = placement.get(day.isoformat(), {})
         local = row.get("local_count") or 0
         cloud = row.get("cloud_count") or 0
-        known = local + cloud
+        known = local + cloud if row.get("available") else 0
         shares["Local"].append(round(100 * local / known, 2) if known else None)
         shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
     measured_days = sum(value is not None for value in shares["Cloud"])
     placement_days = min(days, 14 if measured_days <= 14 else 30 if measured_days <= 30 else 90)
     shares = {name: values[-placement_days:] for name, values in shares.items()}
-    displayed = [placement[day.isoformat()] for day in spine[-placement_days:] if day.isoformat() in placement]
-    combined_days = [row["day"] for row in displayed if row["scope"] == "BB + Cloudroom"]
-    scope = "Sources checked: BB + Cloudroom" if displayed else "No placement observations"
-    if any(row["scope"] == "BB-only" for row in displayed):
-        scope = (f"BB-only history; BB + Cloudroom from {min(combined_days)}" if combined_days
-                 else "BB-only history; Cloudroom was not measured")
-    placement_options = _base_options(f"Open threads: local vs cloud -- last {placement_days} days")
+    placement_options = _base_options(f"Your messages: local vs cloud -- last {placement_days} days")
     placement_options["scales"]["y"].update({
         "min": 0, "max": 100,
-        "title": {"display": True, "text": "Open threads (%)", "color": "#94A3B8", "font": {"size": 20}},
+        "title": {"display": True, "text": "Your messages (%)", "color": "#94A3B8", "font": {"size": 20}},
     })
-    placement_chart = Chart("4-bb-placement.png", {
+    placement_chart = Chart("4-user-messages.png", {
         "type": "line",
         "data": {"labels": labels[-placement_days:], "datasets": [
             {
@@ -373,27 +367,13 @@ def build_report(
     })
     last = placement.get(report_day.isoformat(), {})
     if shares["Cloud"][-1] is not None:
-        content += (f"\nOpen threads: Local **{shares['Local'][-1]:.1f}%** · "
-                    f"Cloud **{shares['Cloud'][-1]:.1f}%** (sampled daily share, not tasks)")
+        content += (f"\nYour messages: Local **{last['local_count']}** ({shares['Local'][-1]:.1f}%) · "
+                    f"Cloud **{last['cloud_count']}** ({shares['Cloud'][-1]:.1f}%).")
     else:
-        content += "\nOpen threads: **no measured percentage** for this day."
-    day_start = datetime.combine(report_day, time.min, local_timezone())
-    day_end = datetime.combine(report_day + timedelta(days=1), time.min, day_start.tzinfo)
-    expected_slots = round((day_end.timestamp() - day_start.timestamp()) / 300)
-    content += (f"\nPlacement scans: {last.get('samples', 0)}/{last.get('attempts', 0)} available; "
-                f"{last.get('samples', 0)}/{expected_slots} daily five-minute slots sampled.")
-    if last:
-        content += f"\nPlacement coverage ({last['scope']}):"
-        for name, label in (("bb", "BB"), ("cloudroom", "Cloudroom")):
-            if name == "cloudroom" and last["scope"] == "BB-only":
-                continue
-            readable, absent = last[f"{name}_samples"], last[f"{name}_absent"]
-            unavailable = last["attempts"] - readable - absent
-            content += f" {label} {readable} readable, {absent} absent, {unavailable} unavailable."
-        if last["unknown_count"]:
-            observed = last["local_count"] + last["cloud_count"] + last["unknown_count"]
-            content += f" Unknown placement: {100 * last['unknown_count'] / observed:.1f}% of thread observations, excluded."
-    content += f"\n{scope}."
+        content += "\nYour messages: **no measured percentage** for this day."
+    if last.get("unknown_count"):
+        content += f"\nUnknown message location: {last['unknown_count']} messages, excluded from percentages."
+    content += "\nHuman messages only, from BB + Cloudroom; automated messages and retries excluded."
     charts = (
         Chart(
             "1-commits.png",

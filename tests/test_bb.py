@@ -173,7 +173,7 @@ class BbTests(unittest.TestCase):
         self.assertEqual(sample.coverage.status, "full")
         self.assertEqual(sample.cloud, 1)
 
-    def test_daily_chart_weights_snapshots_and_keeps_missing_days_blank(self) -> None:
+    def test_daily_legacy_placement_weights_snapshots_and_keeps_missing_days_blank(self) -> None:
         save = self.database.store_bb_placement
         save(self.sample(10, 0), self.now)
         save(self.sample(2, 8), self.now + timedelta(seconds=1))  # replaces this interval
@@ -187,30 +187,23 @@ class BbTests(unittest.TestCase):
         rows = self.database.bb_placement_series(self.now.date(), end)
         self.assertEqual(rows[0]["day"], "2026-08-07")  # local day, not UTC
         self.assertEqual((rows[0]["samples"], rows[0]["attempts"]), (2, 3))
-        report = build_report(self.database, end, days=6)
-        self.assertEqual(len(report.charts), 4)
-        chart = report.charts[3]
-        self.assertEqual(chart.filename, "4-bb-placement.png")
-        local, cloud = chart.config["data"]["datasets"]
-        self.assertEqual((local["label"], cloud["label"]), ("Local", "Cloud"))
-        self.assertEqual((local["borderColor"], cloud["borderColor"]), ("#60A5FA", "#34D399"))
-        self.assertEqual(local["data"], [30, None, None, None, None, 80])
-        self.assertEqual(cloud["data"], [70, None, None, None, None, 20])
-        self.assertFalse(cloud["spanGaps"])
-        self.assertEqual(cloud["cubicInterpolationMode"], "monotone")
-        self.assertEqual(chart.config["options"]["scales"]["y"]["max"], 100)
-        partial = build_report(self.database, self.now.date(), days=1)
-        self.assertIn("2/3 available", partial.content)
-        self.assertIn("Unknown placement: 9.1%", partial.content)
-        self.assertIn("Local **30.0%**", partial.content)
-        self.assertIn("Cloud **70.0%**", partial.content)
-        self.assertIn("2/288 daily five-minute slots sampled", partial.content)
-        self.assertIn("BB-only history; Cloudroom was not measured", partial.content)
-        unavailable = build_report(self.database, self.now.date() + timedelta(days=1), days=1)
-        self.assertIn("no measured percentage", unavailable.content)
-        self.assertIn("0/1 available", unavailable.content)
+        placement = {row["day"]: row for row in self.database.placement_series(self.now.date(), end)}
+        local, cloud = [], []
+        for offset in range(6):
+            row = placement.get((self.now + timedelta(days=offset)).date().isoformat(), {})
+            total = row.get("local_count", 0) + row.get("cloud_count", 0)
+            local.append(100 * row["local_count"] / total if total else None)
+            cloud.append(100 * row["cloud_count"] / total if total else None)
+        self.assertEqual(local, [30, None, None, None, None, 80])
+        self.assertEqual(cloud, [70, None, None, None, None, 20])
+        partial = placement[self.now.date().isoformat()]
+        self.assertEqual((partial["samples"], partial["attempts"], partial["unknown_count"]), (2, 3, 2))
+        self.assertEqual(partial["scope"], "BB-only")
+        unavailable = placement[(self.now + timedelta(days=1)).date().isoformat()]
+        self.assertEqual((unavailable["samples"], unavailable["attempts"]), (0, 1))
+        self.assertIn("no measured percentage", build_report(self.database, end, days=6).content)
 
-    def test_placement_chart_window_uses_unique_measured_dates(self) -> None:
+    def test_legacy_placement_dates_never_supply_message_chart_history(self) -> None:
         for measured, window in ((0, 14), (1, 14), (6, 14), (14, 14), (15, 30), (30, 30), (31, 90)):
             with self.subTest(measured=measured):
                 database = Database(self.root / f"window-{measured}/metrics.sqlite3")
@@ -229,14 +222,12 @@ class BbTests(unittest.TestCase):
                     database.store_bb_placement(sample, self.now - timedelta(days=offset))
                 report = build_report(database, self.now.date())
                 chart = report.charts[3].config
-                expected_days = [self.now.date() - timedelta(days=i) for i in reversed(range(window))]
+                expected_days = [self.now.date() - timedelta(days=i) for i in reversed(range(14))]
                 self.assertEqual(chart["data"]["labels"], [d.strftime("%b %-d") for d in expected_days])
                 self.assertEqual(chart["options"]["plugins"]["title"]["text"],
-                                 f"Open threads: local vs cloud -- last {window} days")
-                expected = [0 if (self.now.date() - d).days in offsets else None for d in expected_days]
-                self.assertEqual(chart["data"]["datasets"][1]["data"], expected)
-                self.assertEqual(chart["data"]["datasets"][0]["data"],
-                                 [100 if v is not None else None for v in expected])
+                                 "Your messages: local vs cloud -- last 14 days")
+                self.assertEqual(chart["data"]["datasets"][1]["data"], [None] * 14)
+                self.assertEqual(chart["data"]["datasets"][0]["data"], [None] * 14)
                 self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
                 self.assertNotIn("subtitle", chart["options"]["plugins"])
                 for other in report.charts[:3]:
@@ -247,7 +238,7 @@ class BbTests(unittest.TestCase):
                 self.assertEqual(len(short["data"]["labels"]), 7)
                 self.assertIn("last 7 days", short["options"]["plugins"]["title"]["text"])
 
-    def test_cloudroom_registry_reaches_cli_chart_without_private_data_or_source_writes(self) -> None:
+    def test_cloudroom_registry_reaches_cli_without_private_data_or_source_writes(self) -> None:
         connection = self.cloudroom_registry()
         connection.executescript("""
             INSERT INTO threads(id, execution_target, environment_id) VALUES
@@ -278,12 +269,11 @@ class BbTests(unittest.TestCase):
             day = date.fromisoformat(stored.execute("SELECT day FROM bb_placement_samples").fetchone()[0])
             dump = "\n".join(stored.iterdump())
         report = build_report(self.database, day, days=1)
-        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["data"], [50])
-        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["label"], "Cloud")
-        self.assertNotIn("subtitle", report.charts[3].config["options"]["plugins"])
-        self.assertIn("BB + Cloudroom", report.content)
-        self.assertIn("Cloudroom 1 readable", report.content)
-        self.assertIn("Unknown placement: 33.3%", report.content)
+        placement = self.database.placement_series(day, day)[0]
+        self.assertEqual((placement["local_count"], placement["cloud_count"], placement["unknown_count"]), (2, 2, 2))
+        self.assertEqual(placement["scope"], "BB + Cloudroom")
+        self.assertEqual(placement["cloudroom_samples"], 1)
+        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["data"], [None])
         for output in (dump, completed.stdout, report.content, json.dumps(report.charts[3].config)):
             self.assertNotIn("private-", output)
             self.assertNotIn("private prompt", output)
@@ -344,21 +334,17 @@ class BbTests(unittest.TestCase):
         save(self.sample(100, 0), first + timedelta(days=1))  # a missing paired scan, not legacy data
         save(self.sample(0, 0), first + timedelta(days=2), cloudroom=self.sample(0, 0))
         save(self.sample(0, 0, 1), first + timedelta(days=3), cloudroom=self.sample(0, 0, 2))
-        report = build_report(self.database, (first + timedelta(days=3)).date(), days=5)
-        self.assertEqual(report.charts[3].config["data"]["datasets"][1]["data"], [0, 75, None, None, None])
-        self.assertIn("BB-only history; BB + Cloudroom from 2026-08-07", report.content)
-        rollout = build_report(self.database, first.date(), days=1)
-        self.assertIn("1/2 available", rollout.content)
-        self.assertIn("Cloudroom 1 readable, 0 absent, 1 unavailable", rollout.content)
-        missing = build_report(self.database, (first + timedelta(days=1)).date(), days=1)
-        self.assertIn("no measured percentage", missing.content)
-        self.assertIn("BB + Cloudroom", missing.content)
+        rows = self.database.placement_series((first - timedelta(days=1)).date(), (first + timedelta(days=3)).date())
+        shares = [100 * row["cloud_count"] / (row["local_count"] + row["cloud_count"])
+                  if row["local_count"] + row["cloud_count"] else None for row in rows]
+        self.assertEqual(shares, [0, 75, None, None, None])
+        self.assertEqual([row["scope"] for row in rows], ["BB-only"] + ["BB + Cloudroom"] * 4)
+        rollout = rows[1]
+        self.assertEqual((rollout["samples"], rollout["attempts"]), (1, 2))
+        self.assertEqual((rollout["cloudroom_samples"], rollout["cloudroom_absent"]), (1, 0))
+        self.assertEqual(rows[2]["samples"], 0)
         with self.database.connect() as connection:
             self.assertEqual(connection.execute("SELECT local_count FROM bb_placement_samples ORDER BY slot LIMIT 1").fetchone()[0], 10)
-        with mock.patch("agentic_productivity.reporting.local_timezone", return_value=ZoneInfo("America/New_York")):
-            for day, slots in ((date(2026, 3, 8), 276), (date(2026, 11, 1), 300)):
-                with self.subTest(day=day):
-                    self.assertIn(f"0/{slots} daily five-minute slots", build_report(self.database, day, days=1).content)
 
     def test_schedule_scans_before_morning_and_after_report_was_sent(self) -> None:
         self.write_fleet([self.thread(1, "private-cloud-id")])

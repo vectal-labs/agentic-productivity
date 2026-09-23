@@ -34,13 +34,21 @@ Both machines use the Mac timezone. Each collector writes opaque HMAC fingerprin
 
 Combined reporting starts at the next Mac-local midnight after both collectors initialize. Missing, stale, unsupported, and partial coverage is retained in local state and fallback summaries. Discord sends only chart images. Missing cloud data is never a confirmed zero.
 
-## Open-thread placement
+## Human-message cloud adoption
+
+`agentic_productivity/messages.py` reads message-origin metadata from `~/.bb/bb.db` (`BB_DATA_DIR` supported) and `~/.gui-cloudroom/bb.db`, using each profile's `host-id`. Both connections use `mode=ro`, live WAL support, and a two-second lock timeout. SQL checks visible content without returning it to Python.
+
+Only human `client/turn/requested` events count. Request fingerprints prevent retries, replays, fork copies, or repeated scans from increasing counts. Event environments and Cloudroom's explicit cloud target determine placement. Retained archived/deleted-thread history counts; missing sources and unknown locations remain explicit coverage states.
+
+Run `./bin/agentic-productivity scan-messages --json` to backfill the last 90 days through today without rendering or sending. `--date YYYY-MM-DD --days N` selects another window. Scheduled native collection refreshes this metric automatically on the Mac. See [metric definitions](metrics.md#4-human-message-cloud-adoption).
+
+## Legacy open-thread placement
 
 - `agentic_productivity/bb.py` reads official BB's machine/thread lists and `~/.bb/host-id` (`BB_DATA_DIR` supported). The CLI is discovered on PATH or in standard BB app locations; Node lookup includes Homebrew. Commands have a 20-second timeout. Raw output/errors are never persisted.
 - `agentic_productivity/cloudroom.py` reads only placement metadata from `~/.gui-cloudroom/bb.db` and its own `host-id`. SQLite uses `mode=ro` with live WAL support and a two-second lock timeout. The GUI can be closed. No credential, prompt, or transcript reads are needed. Other Cloudroom profiles are not discovered automatically.
 - Both sources return aggregate local/remote/unknown counts and coverage. A failed expected source excludes that paired snapshot; its surviving source is never presented as a complete percentage. Previously measured profiles remain expected if they disappear.
 
-This stays separate from native session totals. See [metric definitions](metrics.md#4-open-thread-placement). Run `./bin/agentic-productivity scan-placement --json` for one scan without reporting or delivery. `scan-bb` remains an alias; JSON's existing `cloud` fields now mean remote, and `sources` shows individual coverage.
+These legacy samples stay separate from native session totals and no longer feed the fourth chart. See [metric definitions](metrics.md#legacy-open-thread-placement). Run `./bin/agentic-productivity scan-placement --json` for one scan without reporting or delivery. `scan-bb` remains an alias; JSON's existing `cloud` fields now mean remote, and `sources` shows individual coverage.
 
 ## Known limitations
 
