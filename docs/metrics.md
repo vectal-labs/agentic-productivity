@@ -44,7 +44,7 @@
 
 ## Legacy open-thread placement
 
-- Every five minutes, query official BB's machine/thread lists and read Cloudroom's `~/.gui-cloudroom/bb.db` in read-only mode. No AI agent runs the scan.
+- On every hourly Mac run, query official BB's machine/thread lists and read Cloudroom's `~/.gui-cloudroom/bb.db` in read-only mode. No AI agent runs the scan.
 - Count visible, unarchived, undeleted threads across all projects, including idle and pending threads. This is not completed tasks, execution time, or daily unique sessions. Short-lived threads can fall between scans.
 - **Local** matches each app's own `host-id`. **Cloud** includes Cloudroom's explicit `execution_target='cloud'` and other registered BB hosts, even disconnected ones. Another physical computer also counts as cloud in the chart. Never infer placement from names or model providers.
 - Cloudroom's explicit target takes precedence over its absent BB environment. Missing or removed hosts on native threads are unknown; exclude them from the percentages and report their share separately.

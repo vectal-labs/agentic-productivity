@@ -28,7 +28,7 @@ Collectors read native local stores whenever possible. Paths are relative to the
 
 ## Cloud native collector
 
-The Mac LaunchAgent still runs every five minutes. The main Linux VM runs the same collectors from a copied runtime under `~/.local/share/corral/agentic-productivity`, on a systemd user timer at the same interval. Cloud collection continues without the Mac or BB.
+The Mac LaunchAgent runs hourly to save battery. The main Linux VM runs the same collectors from a copied runtime under `~/.local/share/corral/agentic-productivity`, on a systemd user timer every five minutes. Cloud collection continues without the Mac or BB.
 
 Both machines use the Mac timezone. Each collector writes opaque HMAC fingerprints into local SQLite. The Mac pulls cloud snapshot files over verified SSH and unions fingerprints. Replaying a snapshot does not change counts. BB wrappers stay out of native session and prompt totals.
 
@@ -52,7 +52,7 @@ These legacy samples stay separate from native session totals and no longer feed
 
 ## Known limitations
 
-- Cursor CLI's native store has session-level timestamps but no historical per-turn timestamps. The five-minute observer creates exact daily prompt deltas after its first baseline. Earlier multi-day attribution remains partial. ACP sessions from `cursor-agent acp` use the same `store.db` format under `~/.cursor/acp-sessions` and are counted in this harness.
+- Cursor CLI's native store has session-level timestamps but no historical per-turn timestamps. The hourly observer creates daily prompt deltas after its first baseline; prompts in the last hour before midnight can land on the next day. Earlier multi-day attribution remains partial. ACP sessions from `cursor-agent acp` use the same `store.db` format under `~/.cursor/acp-sessions` and are counted in this harness.
 - Antigravity exposes trajectory/session timestamps but not prompt history, so its prompt coverage is partial by design.
 - A collector with unreadable data reports `partial`, `unavailable`, or `error`; it must not silently claim full coverage.
 - Amp's CLI can open a browser login page. The collector refuses to start it without a local login file, and sets `BROWSER` to a no-op.
