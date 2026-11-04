@@ -360,7 +360,7 @@ def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
                     send_test_report()
                 _ok("Sent a test report to Discord")
             except RuntimeError as error:
-                print(f"  Test report failed: {error}. The daily report will retry at 08:00.")
+                print(f"  Test report failed: {error}. The daily report will retry at 08:10.")
         print(f"\n{_paint('1', 'Done.')}")
     else:
         install_files(paths, python)

@@ -658,11 +658,11 @@ def main(argv: list[str] | None = None) -> int:
             refresh_code_roots=False,
         )
     if arguments.command == "run" and not arguments.force and not arguments.dry_run:
-        if now.hour < 8:
+        if (now.hour, now.minute) < (8, 10):
             if not quiet:
                 _emit(
                     {
-                        "status": "waiting-for-08:00",
+                        "status": "waiting-for-08:10",
                         "timezone": getattr(zone, "key", None) or str(zone),
                         "cursor_observation": observation,
                         "bb_observation": bb_observation,

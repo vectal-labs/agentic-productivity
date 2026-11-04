@@ -14,7 +14,7 @@ Clone this repo and run the installer:
 
 The installer walks you through everything: app, Discord webhook, and the LaunchAgent's macOS access prompts. It waits for the background access check, then sends a test report so you see the charts right away.
 
-Every morning at 08:00 you get three 90-day charts in Discord: Git commits, agent sessions, and prompts — the last two split by harness. Only daily counts leave your Mac (to quickchart.io for rendering); prompts, paths, and identities never do.
+Every morning at 08:10 you get three 90-day charts in Discord: Git commits, agent sessions, and prompts — the last two split by harness. Only daily counts leave your Mac (to quickchart.io for rendering); prompts, paths, and identities never do.
 
 Needs an Apple Silicon Mac, Python 3.11+, and Git. No third-party dependencies.
 

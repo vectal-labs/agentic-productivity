@@ -25,7 +25,7 @@
     <key>Hour</key>
     <integer>8</integer>
     <key>Minute</key>
-    <integer>0</integer>
+    <integer>10</integer>
   </dict>
   <key>StartInterval</key>
   <integer>3600</integer>

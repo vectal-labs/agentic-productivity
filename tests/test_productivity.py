@@ -1603,7 +1603,7 @@ esac
         plist_path = launch_agents / "com.corral.agentic-productivity.plist"
         with plist_path.open("rb") as handle:
             plist = plistlib.load(handle)
-        self.assertEqual(plist["StartCalendarInterval"], {"Hour": 8, "Minute": 0})
+        self.assertEqual(plist["StartCalendarInterval"], {"Hour": 8, "Minute": 10})
         self.assertEqual(plist["StartInterval"], 3600)
         self.assertTrue(plist["RunAtLoad"])
         self.assertEqual(plist["Umask"], 63)
