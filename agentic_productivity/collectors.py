@@ -9,7 +9,8 @@ import shutil
 import sqlite3
 import stat
 import subprocess
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -638,12 +639,18 @@ def collect_opencode(context: CollectorContext) -> HarnessResult:
     return _collect_opencode_legacy_json(context, result, legacy_root)
 
 
-def _readonly_sqlite(path: Path) -> sqlite3.Connection:
+@contextmanager
+def _readonly_sqlite(path: Path) -> Iterator[sqlite3.Connection]:
+    # sqlite3's own context manager never closes the connection. The leaked
+    # handles hit launchd's 256 open-file limit and stopped the report twice.
     uri = f"file:{quote(str(path))}?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=5)
-    connection.execute("PRAGMA query_only=ON")
-    connection.execute("PRAGMA busy_timeout=5000")
-    return connection
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA busy_timeout=5000")
+        yield connection
+    finally:
+        connection.close()
 
 
 def collect_hermes(context: CollectorContext) -> HarnessResult:
@@ -1790,14 +1797,18 @@ def _discover_git_roots(code_root: Path) -> list[Path]:
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=20,
-    )
+    try:
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # A slow repository counts as unreadable instead of crashing the whole run.
+        return subprocess.CompletedProcess(args, 1, "", "")
 
 
 def collect_commits(context: CollectorContext) -> CommitResult:

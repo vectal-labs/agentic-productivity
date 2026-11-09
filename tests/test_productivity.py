@@ -25,6 +25,7 @@ from agentic_productivity import cli  # noqa: E402
 from agentic_productivity.collectors import (  # noqa: E402
     CollectorContext,
     _collect_pi_family,
+    _readonly_sqlite,
     collect_amp,
     collect_antigravity,
     collect_claude,
@@ -1534,6 +1535,20 @@ esac
         self.assertEqual(delivery["status"], "failed")
         self.assertTrue(self.database.begin_delivery(DAY, now))
 
+    def test_readonly_sqlite_closes_connections(self) -> None:
+        # Leaked handles hit launchd's 256 open-file limit and stopped the daily report.
+        path = self.root / "wal.db"
+        writer = sqlite3.connect(path)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE t(x)")
+        writer.commit()
+        writer.close()
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(50):
+            with _readonly_sqlite(path) as connection:
+                connection.execute("SELECT COUNT(*) FROM t").fetchone()
+        self.assertLessEqual(len(os.listdir("/dev/fd")), before + 2)
+
     def test_installer_dry_run_and_mock_cli_need_no_secret_or_network(self) -> None:
         environment = os.environ.copy()
         environment["HOME"] = str(self.home)
@@ -1587,6 +1602,7 @@ esac
                 "CORRAL_PRODUCTIVITY_STATE_DIR": str(state),
                 "CORRAL_PRODUCTIVITY_LAUNCH_AGENTS_DIR": str(launch_agents),
                 "CORRAL_PRODUCTIVITY_LOG_DIR": str(logs),
+                "CORRAL_PRODUCTIVITY_REPORT_TIMEZONE": "Europe/Warsaw",
             }
         )
         for _ in range(2):
@@ -1604,6 +1620,9 @@ esac
         with plist_path.open("rb") as handle:
             plist = plistlib.load(handle)
         self.assertEqual(plist["StartCalendarInterval"], {"Hour": 8, "Minute": 10})
+        self.assertEqual(
+            plist["EnvironmentVariables"]["CORRAL_PRODUCTIVITY_REPORT_TIMEZONE"], "Europe/Warsaw"
+        )
         self.assertEqual(plist["StartInterval"], 3600)
         self.assertTrue(plist["RunAtLoad"])
         self.assertEqual(plist["Umask"], 63)

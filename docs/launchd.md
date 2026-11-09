@@ -6,16 +6,24 @@
 - Plist: `~/Library/LaunchAgents/com.corral.agentic-productivity.plist`
 - Command: Python runs `agentic_productivity.cli run --days 90 --json --quiet`
 - Calendar trigger: 08:10 local time
+- Send time: 08:10 in `CORRAL_PRODUCTIVITY_REPORT_TIMEZONE`, which the installer pins to the install-time zone. Days stay on the local calendar (ADR 0003).
 - Interval trigger: every 3600 seconds (hourly, to save battery)
 - Wake/login trigger: `RunAtLoad`
 
-Every invocation observes Cursor CLI prompt totals, BB + Cloudroom human messages and legacy thread placement, and recent native activity, and imports cloud snapshots. Before 08:10 it stops without reporting. Collection continues after the morning report has been sent, without resending it.
+Every invocation observes Cursor CLI prompt totals, BB + Cloudroom human messages and legacy thread placement, and recent native activity, and imports cloud snapshots. Before the send time it stops without reporting. Collection continues after the morning report has been sent, without resending it.
 
 At or after 08:10, the job re-detects top-level Git roots under the home folder, collects yesterday's metrics, imports any missed cloud snapshots, and builds four charts for the previous 90 days, including Local/Cloud percentages of human messages sent that day. With a webhook, it sends only the four chart images, with no message text, if yesterday has not already been delivered. Without a webhook, it saves the summary and Chart.js data locally without contacting QuickChart. The hourly interval and `RunAtLoad` provide wake catch-up when the Mac missed 08:10.
 
 The Linux collector is `agentic-productivity.timer` in the user systemd directory. It runs `collect --snapshot` every 300 seconds, with `Persistent=true`, and does not send Discord.
 
 SQLite delivery state makes normal runs idempotent. `--force` is the explicit override.
+
+## Reliability
+
+- The job raises its open-file limit to 10240. launchd starts it at 256.
+- Close every SQLite connection you open. A leak of read-only connections hit the 256 limit and stopped the report on Oct 21–27 and Nov 4–8, 2026.
+- A slow Git repository counts as unreadable (partial coverage) instead of crashing the run.
+- Never hot-patch the installed copy. `install.sh` overwrites it; that is how the Oct 29 leak fix was lost on Nov 4. Fix the repo, commit, reinstall.
 
 ## Local fallback
 

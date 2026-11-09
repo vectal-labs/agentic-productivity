@@ -47,6 +47,7 @@
 
 - Never symlink `.bb/skills`; BB requires a real directory during thread startup. Keep regular copies of `.agents/skills` there and verify with `bb file list`, not just `bb skill list`.
 - Read the relevant docs and source files in full before changing behavior.
+- Never hot-patch the installed copy in `~/Library/Application Support/Corral`. `install.sh` overwrites it. Fix the repo, commit, then reinstall.
 - Prefer native, read-only agent registries over process inspection or guessed timestamps.
 - Add a behavior-focused test for every collector or metric change.
 - Add new tests only when they truly earn their place; do not flood the repo with unit tests or duplicate coverage (see ADR 0006).

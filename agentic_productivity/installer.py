@@ -73,6 +73,11 @@ def install_files(paths: dict[str, Path], python: str) -> None:
         (paths["source"] / "launchd" / f"{LABEL}.plist.in").read_text(encoding="utf-8")
         .replace("__PYTHON__", python)
         .replace("__APP_DIR__", str(paths["app"]))
+        # The report keeps the install-time morning while the Mac travels.
+        .replace(
+            "__REPORT_TIMEZONE__",
+            os.environ.get("CORRAL_PRODUCTIVITY_REPORT_TIMEZONE") or local_timezone_name(),
+        )
         .replace("__OUT_LOG__", str(paths["logs"] / "agentic-productivity.out.log"))
         .replace("__ERR_LOG__", str(paths["logs"] / "agentic-productivity.err.log"))
     )

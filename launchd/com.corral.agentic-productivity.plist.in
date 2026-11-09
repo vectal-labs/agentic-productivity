@@ -19,6 +19,8 @@
   <dict>
     <key>PYTHONPATH</key>
     <string>__APP_DIR__</string>
+    <key>CORRAL_PRODUCTIVITY_REPORT_TIMEZONE</key>
+    <string>__REPORT_TIMEZONE__</string>
   </dict>
   <key>StartCalendarInterval</key>
   <dict>

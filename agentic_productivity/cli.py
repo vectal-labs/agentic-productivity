@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import resource
 import shutil
 import sys
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
 from .bb import BbPlacement, combine_placement, scan_bb
@@ -47,6 +49,7 @@ from .reporting import (
 
 INSTALL_PREFLIGHT_REQUEST = ".install-preflight-request.json"
 INSTALL_PREFLIGHT_RESULT = ".install-preflight-result.json"
+REPORT_TIME = (8, 10)
 
 
 def _home() -> Path:
@@ -60,6 +63,26 @@ def _state_dir(home: Path) -> Path:
     if sys.platform == "darwin":
         return home / "Library/Application Support/Corral/Agentic Productivity"
     return home / ".local/share/corral/agentic-productivity"
+
+
+def _report_zone(default):
+    """The send time follows this zone; days stay on the local calendar (ADR 0003)."""
+    name = os.environ.get("CORRAL_PRODUCTIVITY_REPORT_TIMEZONE")
+    try:
+        return ZoneInfo(name) if name else default
+    except (ZoneInfoNotFoundError, ValueError):
+        return default
+
+
+def _raise_open_file_limit() -> None:
+    # launchd starts jobs with a 256 open-file soft limit; a leak there stopped reports twice.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = 10240 if hard == resource.RLIM_INFINITY else min(10240, hard)
+    if soft != resource.RLIM_INFINITY and soft < target:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (OSError, ValueError):
+            pass
 
 
 def _machine() -> str:
@@ -569,6 +592,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _raise_open_file_limit()
     arguments = parser().parse_args(argv)
     home = _home()
     database = _database(home)
@@ -658,12 +682,14 @@ def main(argv: list[str] | None = None) -> int:
             refresh_code_roots=False,
         )
     if arguments.command == "run" and not arguments.force and not arguments.dry_run:
-        if (now.hour, now.minute) < (8, 10):
+        report_zone = _report_zone(zone)
+        report_clock = now.astimezone(report_zone)
+        if (report_clock.hour, report_clock.minute) < REPORT_TIME:
             if not quiet:
                 _emit(
                     {
                         "status": "waiting-for-08:10",
-                        "timezone": getattr(zone, "key", None) or str(zone),
+                        "timezone": getattr(report_zone, "key", None) or str(report_zone),
                         "cursor_observation": observation,
                         "bb_observation": bb_observation,
                         "cloud_import": cloud_import,
