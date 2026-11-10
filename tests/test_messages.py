@@ -133,10 +133,11 @@ class MessageTests(unittest.TestCase):
         chart = report.charts[3].config
         local, cloud = chart["data"]["datasets"]
         self.assertEqual((local["label"], cloud["label"]), ("Local", "Cloud"))
-        self.assertEqual(local["data"], [None, 6.25])
-        self.assertEqual(cloud["data"], [None, 93.75])
+        # One point pools the whole 2-day window; the unmeasured day adds nothing.
+        self.assertEqual(local["data"], [6.25])
+        self.assertEqual(cloud["data"], [93.75])
         self.assertEqual((local["borderColor"], cloud["borderColor"]), ("#60A5FA", "#34D399"))
-        self.assertNotIn("subtitle", chart["options"]["plugins"])
+        self.assertEqual(chart["options"]["plugins"]["title"]["text"], "94% of your messages went to Cloud in the last 2 days")
         self.assertEqual(chart["options"]["scales"]["y"]["max"], 100)
         self.assertIn("Unknown message location: 1", report.content)
         self.assertIn("Local **2**", report.content)
@@ -166,7 +167,7 @@ class MessageTests(unittest.TestCase):
         self.scan()
         rows = self.database.user_message_series(self.now.date()-timedelta(days=1), self.now.date())
         self.assertEqual([(r["local_count"], r["cloud_count"]) for r in rows], [(0, 1), (3, 0)])
-        self.assertEqual(build_report(self.database, self.now.date(), days=2).charts[3].config["data"]["datasets"][1]["data"], [100, 0])
+        self.assertEqual(build_report(self.database, self.now.date(), days=2).charts[3].config["data"]["datasets"][1]["data"], [25])  # 1 cloud of 4 messages, pooled
         # Both the 23-hour and 25-hour local days include their entire history.
         for day in (date(2026, 3, 8), date(2026, 11, 1)):
             start = datetime.combine(day, datetime.min.time(), self.zone)
@@ -252,21 +253,23 @@ class MessageTests(unittest.TestCase):
                 database.store_bb_placement(BbPlacement(0, 100, 0, Coverage("BB placement", True, "full")), self.now)
                 report = build_report(database, self.now.date())
                 chart = report.charts[3].config
-                expected_days = [self.now.date()-timedelta(days=i) for i in reversed(range(window))]
-                expected = [0 if (self.now.date()-day).days in offsets else None for day in expected_days]
-                self.assertEqual(chart["data"]["labels"], [day.strftime("%b %-d") for day in expected_days])
-                self.assertEqual(chart["options"]["plugins"]["title"]["text"], f"Your messages: local vs cloud -- last {window} days")
+                # One point per full week, counted back from the report day.
+                weeks = window // 7
+                week_ends = [7 * week for week in reversed(range(weeks))]
+                expected = [0 if any(end + day in offsets for day in range(7)) else None for end in week_ends]
+                self.assertEqual(chart["data"]["labels"], [(self.now.date()-timedelta(days=end)).strftime("%b %-d") for end in week_ends])
+                self.assertEqual(chart["options"]["plugins"]["subtitle"]["text"], f"Local vs Cloud · one point per week · last {weeks} weeks")
+                self.assertEqual(chart["options"]["plugins"]["title"]["text"],
+                                 "0% of your messages went to Cloud last week" if measured else "Your messages: Local vs Cloud")
                 self.assertEqual(chart["data"]["datasets"][1]["data"], expected)
                 self.assertEqual(chart["data"]["datasets"][0]["data"], [100 if value is not None else None for value in expected])
                 self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
-                self.assertEqual(chart["data"]["datasets"][1]["cubicInterpolationMode"], "monotone")
-                self.assertNotIn("subtitle", chart["options"]["plugins"])
                 for other in report.charts[:3]:
                     self.assertEqual(len(other.config["data"]["labels"]), 90)
                     self.assertIn("last 90 days", other.config["options"]["plugins"]["title"]["text"])
                 short = build_report(database, self.now.date(), days=7).charts[3].config
-                self.assertEqual(len(short["data"]["labels"]), 7)
-                self.assertIn("last 7 days", short["options"]["plugins"]["title"]["text"])
+                self.assertEqual(len(short["data"]["labels"]), 1)
+                self.assertIn("last 7 days", short["options"]["plugins"]["subtitle"]["text"])
 
 
 if __name__ == "__main__":

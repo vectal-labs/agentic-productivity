@@ -1356,9 +1356,10 @@ esac
         self.assertNotIn("All installed collectors", report.content)
         self.assertEqual(len(report.charts), 4)
         self.assertEqual(len(report.charts[0].config["data"]["labels"]), DEFAULT_REPORT_DAYS)
+        self.assertIn("last 2 weeks", report.charts[3].config["options"]["plugins"]["subtitle"]["text"])
         for index, chart in enumerate(report.charts):
-            expected_days = 90 if index < 3 else 14
-            self.assertIn(f"last {expected_days} days", chart.config["options"]["plugins"]["title"]["text"])
+            if index < 3:
+                self.assertIn("last 90 days", chart.config["options"]["plugins"]["title"]["text"])
             self.assertTrue(chart.config["options"]["plugins"]["legend"]["display"])
             self.assertEqual(chart.config["options"]["plugins"]["legend"]["position"], "top")
         for chart in report.charts[:3]:
@@ -1403,9 +1404,13 @@ esac
             return_value=Response(),
         ) as urlopen:
             image = render_chart(report.charts[0])
+            render_chart(report.charts[3])
 
-        request = urlopen.call_args.args[0]
+        request = urlopen.call_args_list[0].args[0]
         payload = json.loads(request.data)
+        weekly = json.loads(urlopen.call_args_list[1].args[0].data)
+        self.assertEqual((weekly["width"], weekly["height"]), (1620, 1080))  # 3:2
+        self.assertIn('"formatter":function(v)', weekly["chart"])  # sent as JavaScript, not a quoted string
         self.assertEqual(image, MOCK_PNG)
         self.assertEqual(payload["version"], "4")
         self.assertEqual(payload["width"], CHART_WIDTH)

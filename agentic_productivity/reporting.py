@@ -23,6 +23,10 @@ KEYCHAIN_SERVICE = "com.corral.agentic-productivity.discord-webhook"
 DEFAULT_REPORT_DAYS = 90
 CHART_WIDTH = 2048
 CHART_HEIGHT = 1080
+PLACEMENT_CHART_WIDTH = 1620  # 3:2
+# QuickChart runs these as JavaScript; render_chart unquotes them.
+PERCENT_LABEL = "function(v){return v==null?'':Math.round(v)+'%'}"
+PERCENT_TICK = "function(v){return v+'%'}"
 MOCK_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
@@ -46,6 +50,7 @@ TREND_COLOR = "#94A3B8"
 class Chart:
     filename: str
     config: dict[str, Any]
+    width: int = CHART_WIDTH
 
 
 @dataclass(frozen=True)
@@ -257,6 +262,62 @@ def _chart_config(
     }
 
 
+def _cloud_share(counts: list[tuple[int, int] | None]) -> float | None:
+    """Cloud share of the pooled (local, cloud) message counts; unmeasured days are None and skipped."""
+    local = sum(item[0] for item in counts if item)
+    cloud = sum(item[1] for item in counts if item)
+    return round(100 * cloud / (local + cloud), 2) if local + cloud else None
+
+
+def _placement_config(spine: list[date], counts: list[tuple[int, int] | None]) -> dict[str, Any]:
+    """Local and Cloud share of human messages, one point per week, weeks counted back from the report day."""
+    span = min(7, len(spine))
+    weeks = max(1, len(spine) // 7)
+    ends = [len(spine) - span * index for index in reversed(range(weeks))]
+    cloud = [_cloud_share(counts[end - span:end]) for end in ends]
+    local = [None if value is None else round(100 - value, 2) for value in cloud]
+    period = "last week" if span == 7 else "yesterday" if span == 1 else f"in the last {span} days"
+    title = "Your messages: Local vs Cloud"
+    if cloud[-1] is not None:
+        title = f"{round(cloud[-1])}% of your messages went to Cloud {period}"
+    window = f"one point per week · last {weeks} weeks" if weeks > 1 else f"last {span} days" if span > 1 else "last day"
+    options = _base_options(title)
+    plugins = options["plugins"]
+    plugins["title"].update({"align": "start", "font": {"size": 46, "weight": "bold"},
+                             "padding": {"top": 8, "bottom": 6}})
+    plugins["subtitle"] = {"display": True, "text": f"Local vs Cloud · {window}", "color": "#94A3B8",
+                           "align": "start", "font": {"size": 26}, "padding": {"bottom": 26}}
+    plugins["legend"]["align"] = "end"
+    plugins["legend"]["labels"]["font"] = {"size": 23}
+    plugins["datalabels"] = {"display": False}
+    options["scales"]["x"]["ticks"].update({"font": {"size": 22}, "maxTicksLimit": 12, "padding": 10})
+    options["scales"]["y"].update({"min": 0, "max": 100})
+    options["scales"]["y"]["ticks"].update({"font": {"size": 22}, "stepSize": 25, "callback": PERCENT_TICK})
+    options["layout"]["padding"] = {"left": 40, "right": 70, "top": 34, "bottom": 28}
+
+    def dataset(name: str, values: list, color: str, align: str, shown: list[bool]) -> dict[str, Any]:
+        return {
+            "label": name, "data": values, "borderColor": color, "backgroundColor": color,
+            "borderWidth": 6, "fill": False, "pointRadius": 8, "pointHoverRadius": 8,
+            "tension": 0, "spanGaps": False,
+            "datalabels": {
+                "display": shown, "color": color, "backgroundColor": "#0F172A", "borderRadius": 4,
+                "padding": 3, "font": {"size": 21, "weight": "bold"}, "align": align, "anchor": "end",
+                "offset": 16, "formatter": PERCENT_LABEL, "clip": False,
+            },
+        }
+
+    return {
+        "type": "line",
+        "data": {"labels": [spine[end - 1].strftime("%b %-d") for end in ends], "datasets": [
+            dataset("Local", local, "#60A5FA", "top", [value is not None for value in local]),
+            # Tiny Cloud labels would sit on the date axis.
+            dataset("Cloud", cloud, "#34D399", "bottom", [value is not None and value >= 8 for value in cloud]),
+        ]},
+        "options": options,
+    }
+
+
 def build_report(
     database: Database, report_day: date, days: int = DEFAULT_REPORT_DAYS
 ) -> Report:
@@ -337,38 +398,23 @@ def build_report(
     if notes:
         content += "\nCoverage: " + "; ".join(notes[:8]) + "."
     placement = {row["day"]: row for row in database.user_message_series(start, report_day)}
-    shares: dict[str, list[float | None]] = {"Local": [], "Cloud": []}
+    counts: list[tuple[int, int] | None] = []
     for day in spine:
         row = placement.get(day.isoformat(), {})
-        local = row.get("local_count") or 0
-        cloud = row.get("cloud_count") or 0
-        known = local + cloud if row.get("available") else 0
-        shares["Local"].append(round(100 * local / known, 2) if known else None)
-        shares["Cloud"].append(round(100 * cloud / known, 2) if known else None)
-    measured_days = sum(value is not None for value in shares["Cloud"])
+        local, cloud = row.get("local_count") or 0, row.get("cloud_count") or 0
+        counts.append((local, cloud) if row.get("available") and local + cloud else None)
+    measured_days = sum(item is not None for item in counts)
     placement_days = min(days, 14 if measured_days <= 14 else 30 if measured_days <= 30 else 90)
-    shares = {name: values[-placement_days:] for name, values in shares.items()}
-    placement_options = _base_options(f"Your messages: local vs cloud -- last {placement_days} days")
-    placement_options["scales"]["y"].update({
-        "min": 0, "max": 100,
-        "title": {"display": True, "text": "Your messages (%)", "color": "#94A3B8", "font": {"size": 20}},
-    })
-    placement_chart = Chart("4-user-messages.png", {
-        "type": "line",
-        "data": {"labels": labels[-placement_days:], "datasets": [
-            {
-                "label": name, "data": values, "borderColor": color, "backgroundColor": color,
-                "borderWidth": 4, "fill": False, "pointRadius": 3, "pointHoverRadius": 6,
-                "cubicInterpolationMode": "monotone", "tension": 0.35, "spanGaps": False,
-            }
-            for (name, values), color in zip(shares.items(), ("#60A5FA", "#34D399"), strict=True)
-        ]},
-        "options": placement_options,
-    })
+    placement_chart = Chart(
+        "4-user-messages.png",
+        _placement_config(spine[-placement_days:], counts[-placement_days:]),
+        PLACEMENT_CHART_WIDTH,
+    )
+    day_cloud = _cloud_share(counts[-1:])
     last = placement.get(report_day.isoformat(), {})
-    if shares["Cloud"][-1] is not None:
-        content += (f"\nYour messages: Local **{last['local_count']}** ({shares['Local'][-1]:.1f}%) · "
-                    f"Cloud **{last['cloud_count']}** ({shares['Cloud'][-1]:.1f}%).")
+    if day_cloud is not None:
+        content += (f"\nYour messages: Local **{last['local_count']}** ({100 - day_cloud:.1f}%) · "
+                    f"Cloud **{last['cloud_count']}** ({day_cloud:.1f}%).")
     else:
         content += "\nYour messages: **no measured percentage** for this day."
     if last.get("unknown_count"):
@@ -408,15 +454,18 @@ def build_report(
 
 
 def render_chart(chart: Chart, *, timeout: int = 20) -> bytes:
+    config = json.dumps(chart.config, separators=(",", ":"))
+    for function in (PERCENT_LABEL, PERCENT_TICK):
+        config = config.replace(json.dumps(function), function)
     body = json.dumps(
         {
             "version": "4",
-            "width": CHART_WIDTH,
+            "width": chart.width,
             "height": CHART_HEIGHT,
             "devicePixelRatio": 1,
             "backgroundColor": "#0F172A",
             "format": "png",
-            "chart": chart.config,
+            "chart": config,
         },
         separators=(",", ":"),
     ).encode("utf-8")

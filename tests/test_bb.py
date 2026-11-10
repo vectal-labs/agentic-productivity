@@ -222,21 +222,21 @@ class BbTests(unittest.TestCase):
                     database.store_bb_placement(sample, self.now - timedelta(days=offset))
                 report = build_report(database, self.now.date())
                 chart = report.charts[3].config
-                expected_days = [self.now.date() - timedelta(days=i) for i in reversed(range(14))]
-                self.assertEqual(chart["data"]["labels"], [d.strftime("%b %-d") for d in expected_days])
-                self.assertEqual(chart["options"]["plugins"]["title"]["text"],
-                                 "Your messages: local vs cloud -- last 14 days")
-                self.assertEqual(chart["data"]["datasets"][1]["data"], [None] * 14)
-                self.assertEqual(chart["data"]["datasets"][0]["data"], [None] * 14)
+                week_ends = [self.now.date() - timedelta(days=7), self.now.date()]
+                self.assertEqual(chart["data"]["labels"], [d.strftime("%b %-d") for d in week_ends])
+                self.assertEqual(chart["options"]["plugins"]["title"]["text"], "Your messages: Local vs Cloud")
+                self.assertEqual(chart["options"]["plugins"]["subtitle"]["text"],
+                                 "Local vs Cloud · one point per week · last 2 weeks")
+                self.assertEqual(chart["data"]["datasets"][1]["data"], [None] * 2)
+                self.assertEqual(chart["data"]["datasets"][0]["data"], [None] * 2)
                 self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
-                self.assertNotIn("subtitle", chart["options"]["plugins"])
                 for other in report.charts[:3]:
                     self.assertEqual(len(other.config["data"]["labels"]), 90)
                     self.assertIn("last 90 days", other.config["options"]["plugins"]["title"]["text"])
                 # Explicit shorter reports must not acquire extra days.
                 short = build_report(database, self.now.date(), days=7).charts[3].config
-                self.assertEqual(len(short["data"]["labels"]), 7)
-                self.assertIn("last 7 days", short["options"]["plugins"]["title"]["text"])
+                self.assertEqual(len(short["data"]["labels"]), 1)
+                self.assertIn("last 7 days", short["options"]["plugins"]["subtitle"]["text"])
 
     def test_cloudroom_registry_reaches_cli_without_private_data_or_source_writes(self) -> None:
         connection = self.cloudroom_registry()
