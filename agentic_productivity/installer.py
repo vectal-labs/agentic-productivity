@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import plistlib
 import secrets
 import shutil
 import subprocess
@@ -58,29 +59,65 @@ def _paths() -> dict[str, Path]:
     }
 
 
+def _report_timezone(plist: Path) -> str:
+    """The report keeps its first-install morning while the Mac travels, and across reinstalls."""
+    override = os.environ.get("CORRAL_PRODUCTIVITY_REPORT_TIMEZONE")
+    if override:
+        return override
+    try:
+        with plist.open("rb") as handle:
+            pinned = plistlib.load(handle)["EnvironmentVariables"]["CORRAL_PRODUCTIVITY_REPORT_TIMEZONE"]
+        if pinned:
+            return str(pinned)
+    except (OSError, KeyError, TypeError, plistlib.InvalidFileException):
+        pass
+    return local_timezone_name()
+
+
+def render_plist(paths: dict[str, Path], python: str) -> str:
+    return (
+        (paths["source"] / "launchd" / f"{LABEL}.plist.in").read_text(encoding="utf-8")
+        .replace("__PYTHON__", python)
+        .replace("__APP_DIR__", str(paths["app"]))
+        .replace("__REPORT_TIMEZONE__", _report_timezone(paths["plist"]))
+        .replace("__OUT_LOG__", str(paths["logs"] / "agentic-productivity.out.log"))
+        .replace("__ERR_LOG__", str(paths["logs"] / "agentic-productivity.err.log"))
+    )
+
+
+def stale_install(paths: dict[str, Path], python: str) -> list[str] | None:
+    """What a reinstall would change. Empty means the daily job runs this code; None means nothing is installed."""
+    package = paths["app"] / "agentic_productivity"
+    if not package.is_dir():
+        return None
+    source = paths["source"] / "agentic_productivity"
+    names = {path.name for path in source.glob("*.py")} | {path.name for path in package.glob("*.py")}
+    stale = sorted(
+        name for name in names
+        if not (source / name).is_file() or not (package / name).is_file()
+        or (source / name).read_bytes() != (package / name).read_bytes()
+    )
+    if not paths["plist"].is_file() or paths["plist"].read_text(encoding="utf-8") != render_plist(paths, python):
+        stale.append(paths["plist"].name)
+    return stale
+
+
 def install_files(paths: dict[str, Path], python: str) -> None:
     package = paths["app"] / "agentic_productivity"
     package.mkdir(parents=True, exist_ok=True)
     for key in ("state", "agents", "logs"):
         paths[key].mkdir(parents=True, exist_ok=True)
-    for src in (paths["source"] / "agentic_productivity").glob("*.py"):
+    sources = {src.name: src for src in (paths["source"] / "agentic_productivity").glob("*.py")}
+    for src in sources.values():
         dest = package / src.name
         shutil.copy2(src, dest)
         dest.chmod(0o600)
+    for old in package.glob("*.py"):
+        if old.name not in sources:  # a module deleted from the repo must not keep running
+            old.unlink()
     for directory in (paths["app"], package, paths["state"], paths["logs"]):
         directory.chmod(0o700)
-    rendered = (
-        (paths["source"] / "launchd" / f"{LABEL}.plist.in").read_text(encoding="utf-8")
-        .replace("__PYTHON__", python)
-        .replace("__APP_DIR__", str(paths["app"]))
-        # The report keeps the install-time morning while the Mac travels.
-        .replace(
-            "__REPORT_TIMEZONE__",
-            os.environ.get("CORRAL_PRODUCTIVITY_REPORT_TIMEZONE") or local_timezone_name(),
-        )
-        .replace("__OUT_LOG__", str(paths["logs"] / "agentic-productivity.out.log"))
-        .replace("__ERR_LOG__", str(paths["logs"] / "agentic-productivity.err.log"))
-    )
+    rendered = render_plist(paths, python)
     temp = paths["agents"] / f".{LABEL}.plist.tmp"
     try:
         temp.write_text(rendered, encoding="utf-8")
@@ -290,6 +327,23 @@ def is_interactive() -> bool:
     return bool(sys.stdin.isatty() and sys.stdout.isatty())
 
 
+def check(paths: dict[str, Path], python: str) -> int:
+    stale = stale_install(paths, python)
+    if stale is None:
+        print("Not installed on this machine; nothing to check.")
+        return 0
+    if not stale:
+        print("Installed copy matches the repo.")
+        return 0
+    print(
+        f"The installed copy is stale: {', '.join(stale)}.\n"
+        "The daily job runs the installed copy, so these changes are not live.\n"
+        "Fix: ./install.sh </dev/null",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def run(*, dry_run: bool, load: bool, interactive: bool) -> int:
     paths = _paths()
     python = os.environ.get("CORRAL_PYTHON") or sys.executable
@@ -385,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
             dry_run = True
         elif argument == "--no-load":
             load = False
+        elif argument == "--check":
+            return check(_paths(), os.environ.get("CORRAL_PYTHON") or sys.executable)
         else:
             print(f"install: unknown argument: {argument}", file=sys.stderr)
             return 2

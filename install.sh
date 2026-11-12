@@ -16,6 +16,12 @@ if [ -z "$PYTHON_BIN" ]; then
   exit 1
 fi
 
+# A real install turns on scripts/hooks/pre-push for this clone:
+# a push of main then fails while the installed copy is stale.
+if [ "$#" -eq 0 ] && [ -e "$SOURCE_DIR/.git" ] && [ -z "$(git -C "$SOURCE_DIR" config --get core.hooksPath 2>/dev/null)" ]; then
+  git -C "$SOURCE_DIR" config core.hooksPath scripts/hooks 2>/dev/null || true
+fi
+
 export CORRAL_PYTHON="$PYTHON_BIN"
 cd "$SOURCE_DIR"
 exec "$PYTHON_BIN" -m agentic_productivity.installer "$@"

@@ -6,7 +6,7 @@
 - Plist: `~/Library/LaunchAgents/com.corral.agentic-productivity.plist`
 - Command: Python runs `agentic_productivity.cli run --days 90 --json --quiet`
 - Calendar trigger: 08:10 local time
-- Send time: 08:10 in `CORRAL_PRODUCTIVITY_REPORT_TIMEZONE`, which the installer pins to the install-time zone. Days stay on the local calendar (ADR 0003).
+- Send time: 08:10 in `CORRAL_PRODUCTIVITY_REPORT_TIMEZONE`. The first install pins it to the local zone, and reinstalls keep it. Set the variable to change it. Days stay on the local calendar (ADR 0003).
 - Interval trigger: every 3600 seconds (hourly, to save battery)
 - Wake/login trigger: `RunAtLoad`
 
@@ -24,6 +24,8 @@ SQLite delivery state makes normal runs idempotent. `--force` is the explicit ov
 - Close every SQLite connection you open. A leak of read-only connections hit the 256 limit and stopped the report on Oct 21–27 and Nov 4–8, 2026.
 - A slow Git repository counts as unreadable (partial coverage) instead of crashing the run.
 - Never hot-patch the installed copy. `install.sh` overwrites it; that is how the Oct 29 leak fix was lost on Nov 4. Fix the repo, commit, reinstall.
+- A push does not deploy. The weekly chart was pushed on Nov 10, 2026 but never reinstalled, so the old chart kept going out until Nov 12.
+- `./install.sh --check` compares the repo with the installed code and LaunchAgent, and exits 1 when a reinstall would change anything. `scripts/hooks/pre-push` runs it and blocks a push of `main` while the copy is stale. A real install turns the hook on for the clone (`core.hooksPath`). A machine with nothing installed is never blocked.
 
 ## Local fallback
 
@@ -37,7 +39,7 @@ The same fallback is saved when chart rendering or Discord delivery fails. Faile
 
 1. Selects Python 3.11 or newer.
 2. Scans the home folder for Git repositories during interactive installation and stores their top-level roots.
-3. Copies the package into the private Application Support directory.
+3. Copies the package into the private Application Support directory, and removes modules that left the repo.
 4. Renders the plist template with absolute paths.
 5. Sets private file permissions and configures the Discord webhook.
 6. Replaces and starts the user LaunchAgent.

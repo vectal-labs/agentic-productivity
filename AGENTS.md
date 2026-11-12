@@ -48,6 +48,8 @@
 - Never symlink `.bb/skills`; BB requires a real directory during thread startup. Keep regular copies of `.agents/skills` there and verify with `bb file list`, not just `bb skill list`.
 - Read the relevant docs and source files in full before changing behavior.
 - Never hot-patch the installed copy in `~/Library/Application Support/Corral`. `install.sh` overwrites it. Fix the repo, commit, then reinstall.
+- A push does not deploy. The daily job runs the installed copy, so a change is live only after `./install.sh </dev/null`. Run it yourself as part of the change; never leave it as a follow-up or an offer.
+- Done means `./install.sh --check` passes. The pre-push hook runs it and blocks a push of `main` while the installed copy is stale.
 - Prefer native, read-only agent registries over process inspection or guessed timestamps.
 - Add a behavior-focused test for every collector or metric change.
 - Add new tests only when they truly earn their place; do not flood the repo with unit tests or duplicate coverage (see ADR 0006).
@@ -61,4 +63,6 @@
 ```sh
 ./scripts/test.sh
 ./bin/agentic-productivity mock
+./install.sh </dev/null   # deploy to this Mac
+./install.sh --check      # must pass before you say "done" or push
 ```

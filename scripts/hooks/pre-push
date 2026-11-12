@@ -1,0 +1,8 @@
+#!/bin/sh
+# A push does not deploy. The daily job runs the installed copy, not this repo.
+# So a push of main fails while this machine's installed copy is stale.
+# install.sh turns this hook on. Skip once with: git push --no-verify
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  [ "$remote_ref" = refs/heads/main ] || continue
+  exec "$(git rev-parse --show-toplevel)/install.sh" --check </dev/null
+done

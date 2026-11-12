@@ -1607,26 +1607,43 @@ esac
                 "CORRAL_PRODUCTIVITY_STATE_DIR": str(state),
                 "CORRAL_PRODUCTIVITY_LAUNCH_AGENTS_DIR": str(launch_agents),
                 "CORRAL_PRODUCTIVITY_LOG_DIR": str(logs),
-                "CORRAL_PRODUCTIVITY_REPORT_TIMEZONE": "Europe/Warsaw",
+                "CORRAL_PRODUCTIVITY_REPORT_TIMEZONE": "Pacific/Auckland",
             }
         )
-        for _ in range(2):
-            completed = subprocess.run(
-                [str(PRODUCTIVITY_ROOT / "install.sh"), "--no-load"],
+
+        def install(argument: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [str(PRODUCTIVITY_ROOT / "install.sh"), argument],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=environment,
                 check=False,
             )
+
+        self.assertEqual(install("--check").returncode, 0)  # nothing installed yet: never blocks a push
+        for _ in range(2):
+            completed = install("--no-load")
             self.assertEqual(completed.returncode, 0, completed.stderr)
+            # The second, plain reinstall must keep the pinned morning.
+            environment.pop("CORRAL_PRODUCTIVITY_REPORT_TIMEZONE", None)
+            environment["TZ"] = "UTC"
+        self.assertEqual(install("--check").returncode, 0)
+        # Code that changed in the repo but was never reinstalled is caught.
+        (app / "agentic_productivity/cli.py").write_text("# an older release\n", encoding="utf-8")
+        (app / "agentic_productivity/removed.py").write_text("", encoding="utf-8")
+        stale = install("--check")
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn("cli.py, removed.py", stale.stderr)
+        self.assertEqual(install("--no-load").returncode, 0)
+        self.assertEqual(install("--check").returncode, 0)
 
         plist_path = launch_agents / "com.corral.agentic-productivity.plist"
         with plist_path.open("rb") as handle:
             plist = plistlib.load(handle)
         self.assertEqual(plist["StartCalendarInterval"], {"Hour": 8, "Minute": 10})
         self.assertEqual(
-            plist["EnvironmentVariables"]["CORRAL_PRODUCTIVITY_REPORT_TIMEZONE"], "Europe/Warsaw"
+            plist["EnvironmentVariables"]["CORRAL_PRODUCTIVITY_REPORT_TIMEZONE"], "Pacific/Auckland"
         )
         self.assertEqual(plist["StartInterval"], 3600)
         self.assertTrue(plist["RunAtLoad"])
