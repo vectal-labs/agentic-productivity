@@ -17,6 +17,7 @@
 - Count a session on every local Mac calendar day where its native registry records activity.
 - Do not count a session file that has no real turn. A real turn is an instruction-bearing message or a `session_init` entry. Empty drafts do not count.
 - Include GUI, CLI, headless, resumed, parent, subagent, delegated, and automated sessions.
+- Exception: Hermes cron job runs do not count. They are scheduled scripts, not agent work, and one 10-minute job once added ~120 sessions a day.
 - Each native child transcript is its own session, including OMP task files and advisor files. Do not fold them into the parent.
 - Deduplicate with a private HMAC fingerprint of the harness plus native session identity. Genuine child sessions stay separate.
 - After both the Mac and cloud collectors initialize, daily totals are the set union of fingerprints from both machines. Earlier days stay Mac-only.

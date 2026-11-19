@@ -666,8 +666,14 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
         return result
     try:
         with _readonly_sqlite(path) as connection:
+            # Hermes cron jobs are scheduled scripts, not agent work. A stale
+            # 10-minute job once added ~120 fake sessions a day to the chart.
             rows = connection.execute(
-                "SELECT session_id, role, timestamp FROM messages WHERE timestamp >= ?",
+                """
+                SELECT m.session_id, m.role, m.timestamp
+                FROM messages AS m LEFT JOIN sessions AS s ON s.id = m.session_id
+                WHERE m.timestamp >= ? AND COALESCE(s.source, '') <> 'cron'
+                """,
                 (context.start_timestamp,),
             )
             copies = _PromptCopies()
@@ -692,7 +698,7 @@ def collect_hermes(context: CollectorContext) -> HarnessResult:
                 """
                 SELECT id, started_at FROM sessions
                 WHERE system_prompt IS NOT NULL AND length(system_prompt) > 0
-                  AND started_at >= ?
+                  AND started_at >= ? AND source <> 'cron'
                 """,
                 (context.start_timestamp,),
             ):

@@ -14,7 +14,7 @@ Collectors read native local stores whenever possible. Paths are relative to the
 | Cline | Cursor/VS Code `globalStorage/saoudrizwan.claude-dev/tasks` | Initial tasks and user feedback |
 | GitHub Copilot | VS Code `workspaceStorage/**/chatSessions` and global chat stores | Native chat requests |
 | Antigravity | `~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb` | Session timestamps only; prompt history is unavailable |
-| Hermes | `~/.hermes/state.db` | Sessions and instruction-role messages |
+| Hermes | `~/.hermes/state.db` | Sessions and instruction-role messages. Cron job runs (`source='cron'`) are excluded |
 | Pi Agent | `~/.pi/agent/sessions` and `~/.bb/pi-bridge-sessions` (`BB_DATA_DIR` overrides `~/.bb`) | Native Pi transcripts from both locations; model providers such as `openai-codex` remain Pi Agent |
 | Oh My Pi | `~/.omp/agent/sessions` | Sessions, instruction-role messages, and `session_init` tasks. Child transcripts are separate sessions |
 | Prime Agent | `~/.prime/agent/sessions` | Sessions and instruction-role messages |

@@ -1039,25 +1039,27 @@ class ProductivityTests(unittest.TestCase):
         hermes = self.home / ".hermes/state.db"
         hermes.parent.mkdir(parents=True)
         with sqlite3.connect(hermes) as connection:
+            hermes_time = datetime.fromisoformat(STAMP.replace("Z", "+00:00")).timestamp()
             connection.execute(
-                "CREATE TABLE sessions (id TEXT, started_at REAL, system_prompt TEXT)"
+                "CREATE TABLE sessions (id TEXT, source TEXT, started_at REAL, system_prompt TEXT)"
             )
             connection.execute(
                 "CREATE TABLE messages (session_id TEXT, role TEXT, timestamp REAL)"
             )
-            connection.execute(
-                "INSERT INTO sessions VALUES(?, ?, ?)",
-                (
-                    "h1",
-                    datetime.fromisoformat(STAMP.replace("Z", "+00:00")).timestamp(),
-                    "private system instruction",
-                ),
+            # The cron session is a scheduled job, not agent work: it never counts.
+            connection.executemany(
+                "INSERT INTO sessions VALUES(?, ?, ?, ?)",
+                [
+                    ("h1", "cli", hermes_time, "private system instruction"),
+                    ("h2", "cron", hermes_time, "private system instruction"),
+                ],
             )
             connection.executemany(
                 "INSERT INTO messages VALUES(?, ?, ?)",
                 [
-                    ("h1", "user", datetime.fromisoformat(STAMP.replace("Z", "+00:00")).timestamp()),
-                    ("h1", "assistant", datetime.fromisoformat(STAMP.replace("Z", "+00:00")).timestamp()),
+                    ("h1", "user", hermes_time),
+                    ("h1", "assistant", hermes_time),
+                    ("h2", "user", hermes_time),
                 ],
             )
         open_message = self.home / ".local/share/opencode/storage/message/s1/m1.json"
@@ -1120,7 +1122,9 @@ esac
         login.write_text("{}\n", encoding="utf-8")
         amp_result = collect_amp(self.context)
 
-        self.assertEqual(collect_hermes(self.context).prompts[DAY], 2)
+        hermes_result = collect_hermes(self.context)
+        self.assertEqual(hermes_result.session_counts()[DAY], 1)
+        self.assertEqual(hermes_result.prompts[DAY], 2)
         self.assertEqual(collect_opencode(self.context).prompts[DAY], 1)
         self.assertEqual(collect_gemini(self.context).prompts[DAY], 1)
         self.assertEqual(collect_qwen(self.context).prompts[DAY], 1)
