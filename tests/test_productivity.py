@@ -59,7 +59,9 @@ from agentic_productivity.reporting import (  # noqa: E402
     CHART_WIDTH,
     DEFAULT_REPORT_DAYS,
     MOCK_PNG,
+    HARNESS_COLORS,
     TREND_COLOR,
+    _harness_config,
     _linear_trend,
     build_report,
     mock_delivery,
@@ -383,7 +385,7 @@ class ProductivityTests(unittest.TestCase):
                 self.assertEqual(rows[("2026-08-08", "prompts", "Pi Agent")], 1)
                 self.assertEqual(rows[("2026-08-08", "prompts", "Codex")], 1)
                 report = build_report(database, date(2026, 8, 8), days=2)
-                series = {d["label"]: d["data"] for d in report.charts[2].config["data"]["datasets"]}
+                series = {d["label"].split("  ")[0]: d["data"] for d in report.charts[2].config["data"]["datasets"]}
                 self.assertEqual(series["Pi Agent"], [2, 1])
                 with database.connect() as connection:
                     dumped = "\n".join(connection.iterdump())
@@ -1317,6 +1319,17 @@ esac
         self.assertEqual(_linear_trend([4, 4, 4]), [4.0, 4.0, 4.0])
         self.assertEqual(_linear_trend([]), [])
 
+    def test_harness_charts_keep_colors_fixed_and_leave_off_tiny_harnesses(self) -> None:
+        config = _harness_config(
+            title_noun="agent sessions", noun="sessions", days=2, labels=["a", "b"],
+            series={"Codex": [100, 300], "Claude Code": [100, 100], "Hermes": [1, 0]},
+        )
+        bars = {item["label"].split("  ")[0]: item for item in config["data"]["datasets"] if item["type"] == "bar"}
+        self.assertEqual(set(bars), {"Codex", "Claude Code"})  # Hermes is under 1%
+        self.assertEqual(bars["Claude Code"]["backgroundColor"], HARNESS_COLORS["Claude Code"])
+        self.assertEqual(config["options"]["plugins"]["title"]["text"], "400 agent sessions yesterday")
+        self.assertIn("trend ↑ up", config["options"]["plugins"]["subtitle"]["text"])
+
     def test_report_contains_only_aggregates_and_mock_sends_four_files(self) -> None:
         sensitive = "never-send-this-prompt"
         harness = HarnessResult("Codex")
@@ -1361,26 +1374,22 @@ esac
         self.assertEqual(len(report.charts), 4)
         self.assertEqual(len(report.charts[0].config["data"]["labels"]), DEFAULT_REPORT_DAYS)
         self.assertIn("last 2 weeks", report.charts[3].config["options"]["plugins"]["subtitle"]["text"])
-        for index, chart in enumerate(report.charts):
-            if index < 3:
-                self.assertIn("last 90 days", chart.config["options"]["plugins"]["title"]["text"])
+        self.assertIn("last 90 days", report.charts[0].config["options"]["plugins"]["title"]["text"])
+        for chart in report.charts:
             self.assertTrue(chart.config["options"]["plugins"]["legend"]["display"])
             self.assertEqual(chart.config["options"]["plugins"]["legend"]["position"], "top")
-        for chart in report.charts[:3]:
-            trend = chart.config["data"]["datasets"][-1]
-            self.assertEqual(trend["label"], "Long-term trend")
-            self.assertEqual(trend["type"], "line")
-            self.assertEqual(trend["borderColor"], TREND_COLOR)
-            self.assertEqual(trend["borderDash"], [10, 8])
-            self.assertEqual(trend["pointRadius"], 0)
-            self.assertEqual(trend["tension"], 0)
-            self.assertEqual(trend["lineTension"], 0)
-            self.assertNotIn("order", trend)
-            self.assertEqual(len(trend["data"]), DEFAULT_REPORT_DAYS)
+        commit_trend = report.charts[0].config["data"]["datasets"][-1]
+        self.assertEqual(commit_trend["label"], "Long-term trend")
+        self.assertEqual(commit_trend["borderColor"], TREND_COLOR)
         for chart in report.charts[1:3]:
+            self.assertEqual(chart.width, 1620)  # 3:2
+            self.assertIn("last 90 days", chart.config["options"]["plugins"]["subtitle"]["text"])
             self.assertEqual(chart.config["type"], "bar")
             self.assertTrue(chart.config["options"]["scales"]["x"]["stacked"])
             self.assertTrue(chart.config["options"]["scales"]["y"]["stacked"])
+            trend = next(item for item in chart.config["data"]["datasets"] if item["label"].startswith("Trend: "))
+            self.assertEqual((trend["type"], trend["pointRadius"], trend["tension"]), ("line", 0, 0))
+            self.assertEqual(len(trend["data"]), DEFAULT_REPORT_DAYS)
         self.assertEqual(delivered["attachments"], [
             "1-commits.png",
             "2-sessions.png",

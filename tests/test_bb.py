@@ -232,7 +232,7 @@ class BbTests(unittest.TestCase):
                 self.assertFalse(chart["data"]["datasets"][1]["spanGaps"])
                 for other in report.charts[:3]:
                     self.assertEqual(len(other.config["data"]["labels"]), 90)
-                    self.assertIn("last 90 days", other.config["options"]["plugins"]["title"]["text"])
+                    self.assertIn("last 90 days", json.dumps(other.config["options"]["plugins"]))
                 # Explicit shorter reports must not acquire extra days.
                 short = build_report(database, self.now.date(), days=7).charts[3].config
                 self.assertEqual(len(short["data"]["labels"]), 1)

@@ -66,8 +66,9 @@
 
 - Commits use a daily line and area chart.
 - Sessions and prompts use stacked daily bars. Bar height is the total; colored segments are harness contributions.
-- The original three charts have a gray dashed least-squares trend across the displayed window.
+- The original three charts have a dashed least-squares trend: one straight line across the displayed window.
 - Session and prompt trendlines use the combined daily total across all harnesses.
+- Sessions and prompts: the title is yesterday's total, and the subtitle says whether the trend is up, down (by 10% or more from its start), or flat. Each harness has a fixed brand color, and the legend shows its share of the window. Harnesses under 1% of the window are left off the bars, but every total, label, and trend still counts them. The peak day and yesterday are labeled.
 - Human-message adoption uses Local and Cloud lines on a fixed 0–100% axis, one point per week. Weeks are full 7-day blocks counted back from the report day, labeled by their last day. Each point pools that week's messages, so a quiet day cannot swing it. The title states the latest week's Cloud share. Unmeasured days are skipped; a week with none breaks the lines. Coverage details stay in the local summary. Legacy open-thread samples never feed this chart.
 - Only the message-adoption chart adapts its window: up to 14 unique measured dates → last 14 days; 15–30 → last 30 days; more than 30 → last 90 days (2, 4, or 12 weekly points). Count dates with a known local/cloud message percentage within the requested report history, including 0% and 100%. Failed, empty, and unknown-only days do not qualify. A shorter explicit report window remains the upper limit.
-- Charts are 2048 × 1080 PNGs with a dark navy background, a top legend, and sparse date labels. The message-adoption chart is 3:2 (1620 × 1080).
+- Charts are PNGs with a dark navy background, a top legend, and sparse date labels. Commits are 2048 × 1080; sessions, prompts, and message adoption are 3:2 (1620 × 1080).

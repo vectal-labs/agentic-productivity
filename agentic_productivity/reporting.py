@@ -23,26 +23,30 @@ KEYCHAIN_SERVICE = "com.corral.agentic-productivity.discord-webhook"
 DEFAULT_REPORT_DAYS = 90
 CHART_WIDTH = 2048
 CHART_HEIGHT = 1080
-PLACEMENT_CHART_WIDTH = 1620  # 3:2
+NARROW_CHART_WIDTH = 1620  # 3:2
 # QuickChart runs these as JavaScript; render_chart unquotes them.
 PERCENT_LABEL = "function(v){return v==null?'':Math.round(v)+'%'}"
 PERCENT_TICK = "function(v){return v+'%'}"
+HIDE_UNDERSCORE_LEGEND = "function(i){return !(i.text||'').startsWith('_')}"
+LEGEND_IN_DATASET_ORDER = "function(a,b){return a.datasetIndex-b.datasetIndex}"
 MOCK_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
-COLORS = (
-    "#7C3AED",
-    "#2563EB",
-    "#0891B2",
-    "#059669",
-    "#65A30D",
-    "#CA8A04",
-    "#EA580C",
-    "#DC2626",
-    "#DB2777",
-    "#7C2D12",
-    "#475569",
-)
+# Fixed per harness so a color means the same harness on every day's chart.
+HARNESS_COLORS = {
+    "Claude Code": "#D97757",  # Anthropic clay
+    "Codex": "#10A37F",  # OpenAI green
+    "Cursor CLI": "#A1A1AA",
+    "Cursor GUI": "#E4E4E7",
+    "Pi Agent": "#F472B6",
+    "Factory Droid": "#FACC15",
+    "OpenCode": "#60A5FA",
+    "Hermes": "#A78BFA",
+    "GitHub Copilot": "#8957E5",
+}
+OTHER_HARNESS_COLOR = "#64748B"
+# Harnesses below this share of the window are left off the bars; totals still count them.
+MIN_HARNESS_SHARE = 0.01
 TREND_COLOR = "#94A3B8"
 
 
@@ -229,37 +233,93 @@ def _trend_dataset(values: list[int]) -> dict[str, Any]:
     }
 
 
-def _chart_config(
-    *, title: str, labels: list[str], series: dict[str, list[int]], single: bool
-) -> dict[str, Any]:
-    datasets = []
-    for index, (name, values) in enumerate(series.items()):
-        color = COLORS[index % len(COLORS)]
-        datasets.append(
-            {
-                "label": name,
-                "data": values,
-                "borderColor": color,
-                "backgroundColor": color if not single else "rgba(124,58,237,0.18)",
-                "borderWidth": 4 if single else 0,
-                "fill": single,
-                "tension": 0 if single else 0,
-                "pointRadius": 4 if single else 0,
-                "pointHoverRadius": 5 if single else 0,
-                "stack": "metrics",
-                "barPercentage": 0.86,
-                "categoryPercentage": 0.9,
-            }
-        )
-    daily_totals = [
-        sum(values[index] for values in series.values()) for index in range(len(labels))
-    ]
-    datasets.append(_trend_dataset(daily_totals))
-    return {
-        "type": "line" if single else "bar",
-        "data": {"labels": labels, "datasets": datasets},
-        "options": _base_options(title, stacked=not single),
+def _commits_config(*, title: str, labels: list[str], commits: list[int]) -> dict[str, Any]:
+    line = {
+        "label": "Commits",
+        "data": commits,
+        "borderColor": "#7C3AED",
+        "backgroundColor": "rgba(124,58,237,0.18)",
+        "borderWidth": 4,
+        "fill": True,
+        "tension": 0,
+        "pointRadius": 4,
+        "pointHoverRadius": 5,
     }
+    return {
+        "type": "line",
+        "data": {"labels": labels, "datasets": [line, _trend_dataset(commits)]},
+        "options": _base_options(title),
+    }
+
+
+def _trend_direction(trend: list[float]) -> tuple[str, str]:
+    """Arrow and words for the trend line: up or down by 10%+ from its start, otherwise flat."""
+    start, end = (trend[0], trend[-1]) if trend else (0.0, 0.0)
+    if start <= 0:
+        return ("↑", "up") if end > 0 else ("→", "flat")
+    change = round(100 * (end - start) / start)
+    if change >= 10:
+        return "↑", f"up {change}%"
+    if change <= -10:
+        return "↓", f"down {-change}%"
+    return "→", "flat"
+
+
+def _harness_config(
+    *, title_noun: str, noun: str, days: int, labels: list[str], series: dict[str, list[int]]
+) -> dict[str, Any]:
+    """Stacked daily bars by harness with yesterday's total as the headline and a straight trend line."""
+    totals = [sum(values[index] for values in series.values()) for index in range(len(labels))]
+    grand = sum(totals)
+    shown = {
+        name: values for name, values in series.items() if sum(values) >= MIN_HARNESS_SHARE * grand
+    } or series
+    trend = _linear_trend(totals)
+    arrow, direction = _trend_direction(trend)
+    peak, last = max(range(len(totals)), key=totals.__getitem__), len(totals) - 1
+
+    options = _base_options(f"{totals[-1]:,} {title_noun} yesterday", stacked=True)
+    plugins = options["plugins"]
+    plugins["title"].update({"align": "start", "color": "#F1F5F9", "font": {"size": 52, "weight": "bold"},
+                             "padding": {"top": 8, "bottom": 4}})
+    plugins["subtitle"] = {"display": True, "align": "start", "color": "#94A3B8", "font": {"size": 25},
+                           "padding": {"bottom": 22},
+                           "text": f"Daily {noun} by harness · last {days} days · trend {arrow} {direction}"}
+    plugins["legend"]["align"] = "start"
+    plugins["legend"]["labels"].update({"color": "#CBD5E1", "usePointStyle": True, "pointStyle": "circle",
+                                        "boxWidth": 16, "boxHeight": 16, "padding": 26, "font": {"size": 22},
+                                        "filter": HIDE_UNDERSCORE_LEGEND, "sort": LEGEND_IN_DATASET_ORDER})
+    plugins["datalabels"] = {"display": False}
+    options["scales"]["x"]["ticks"].update({"font": {"size": 20}, "maxTicksLimit": 9})
+    options["scales"]["y"]["ticks"].update({"font": {"size": 20}, "maxTicksLimit": 6, "padding": 10})
+    options["layout"]["padding"] = {"left": 44, "right": 56, "top": 36, "bottom": 28}
+
+    datasets: list[dict[str, Any]] = [
+        {
+            "type": "bar",
+            "label": f"{name}  {round(100 * sum(values) / grand)}%" if grand else name,
+            "data": values,
+            "backgroundColor": HARNESS_COLORS.get(name, OTHER_HARNESS_COLOR),
+            "borderWidth": 0,
+            "borderRadius": 4,
+            "stack": "metrics",
+            "barPercentage": 0.8,
+            "categoryPercentage": 0.94,
+            "order": 2,
+        }
+        for name, values in shown.items()
+    ]
+    datasets.append({**_trend_dataset(totals), "label": f"Trend: {direction}", "borderColor": "#E2E8F0",
+                     "backgroundColor": "#E2E8F0", "borderDash": [12, 8], "order": 0})
+    # Invisible series that labels the peak and latest day with the full total.
+    datasets.append({
+        "type": "line", "label": "_total", "data": totals, "showLine": False, "pointRadius": 0,
+        "pointHoverRadius": 0, "stack": "total",
+        "datalabels": {"display": [index in (peak, last) and totals[index] > 0 for index in range(len(totals))],
+                       "anchor": "end", "align": "top", "offset": 4, "color": "#F1F5F9",
+                       "font": {"size": 24, "weight": "bold"}, "clip": False},
+    })
+    return {"type": "bar", "data": {"labels": labels, "datasets": datasets}, "options": options}
 
 
 def _cloud_share(counts: list[tuple[int, int] | None]) -> float | None:
@@ -408,7 +468,7 @@ def build_report(
     placement_chart = Chart(
         "4-user-messages.png",
         _placement_config(spine[-placement_days:], counts[-placement_days:]),
-        PLACEMENT_CHART_WIDTH,
+        NARROW_CHART_WIDTH,
     )
     day_cloud = _cloud_share(counts[-1:])
     last = placement.get(report_day.isoformat(), {})
@@ -423,30 +483,29 @@ def build_report(
     charts = (
         Chart(
             "1-commits.png",
-            _chart_config(
-                title=f"Unique local commits — last {days} days",
-                labels=labels,
-                series={"Commits": commits},
-                single=True,
-            ),
+            _commits_config(title=f"Unique local commits — last {days} days", labels=labels, commits=commits),
         ),
         Chart(
             "2-sessions.png",
-            _chart_config(
-                title=f"Active agent sessions — last {days} days",
+            _harness_config(
+                title_noun="agent sessions",
+                noun="sessions",
+                days=days,
                 labels=labels,
                 series=sessions or {"No measured sessions": [0] * len(spine)},
-                single=False,
             ),
+            NARROW_CHART_WIDTH,
         ),
         Chart(
             "3-prompts.png",
-            _chart_config(
-                title=f"Instruction-bearing prompts — last {days} days",
+            _harness_config(
+                title_noun="prompts",
+                noun="prompts",
+                days=days,
                 labels=labels,
                 series=prompts or {"No measured prompts": [0] * len(spine)},
-                single=False,
             ),
+            NARROW_CHART_WIDTH,
         ),
         placement_chart,
     )
@@ -455,7 +514,7 @@ def build_report(
 
 def render_chart(chart: Chart, *, timeout: int = 20) -> bytes:
     config = json.dumps(chart.config, separators=(",", ":"))
-    for function in (PERCENT_LABEL, PERCENT_TICK):
+    for function in (PERCENT_LABEL, PERCENT_TICK, HIDE_UNDERSCORE_LEGEND, LEGEND_IN_DATASET_ORDER):
         config = config.replace(json.dumps(function), function)
     body = json.dumps(
         {
